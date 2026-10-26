@@ -1,9 +1,9 @@
 """Fixed enumerations and defaults used across Gehrman.
 
-Keeping the skill list and experience levels here (not in free-form config)
-so later tool arguments can reuse the same closed set. Categorical values
-must stay enumerable: open strings are harder to validate and easier to
-abuse as an injection surface.
+Keeping the skill list, experience levels, and platforms here (not in
+free-form config) so later tool arguments can reuse the same closed set.
+Categorical values must stay enumerable: open strings are harder to
+validate and easier to abuse as an injection surface.
 """
 
 from __future__ import annotations
@@ -26,6 +26,24 @@ DEFAULT_MAX_TOKENS_PER_MESSAGE = 8000
 DEFAULT_TEXT_TRUNCATE = 1000
 DEFAULT_TIME_UNIT = "hours"
 DEFAULT_WEIGHTS_VERSION = "1"
+
+# Public snapshots from arkadiyt/bounty-targets-data.
+BOUNTY_TARGETS_DATA_BASE = (
+    "https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data"
+)
+
+
+class Platform(StrEnum):
+    HACKERONE = "hackerone"
+    BUGCROWD = "bugcrowd"
+    INTIGRITI = "intigriti"
+
+
+CATALOG_URLS: dict[Platform, str] = {
+    Platform.HACKERONE: f"{BOUNTY_TARGETS_DATA_BASE}/hackerone_data.json",
+    Platform.BUGCROWD: f"{BOUNTY_TARGETS_DATA_BASE}/bugcrowd_data.json",
+    Platform.INTIGRITI: f"{BOUNTY_TARGETS_DATA_BASE}/intigriti_data.json",
+}
 
 
 class ExperienceLevel(StrEnum):
@@ -51,3 +69,4 @@ class Provider(StrEnum):
 
 SKILL_VALUES = tuple(skill.value for skill in Skill)
 EXPERIENCE_VALUES = tuple(level.value for level in ExperienceLevel)
+PLATFORM_VALUES = tuple(platform.value for platform in Platform)

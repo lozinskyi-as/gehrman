@@ -10,9 +10,9 @@ scans, probes, or contacts a program's targets.
 
 ## Scope
 
-- Platforms: HackerOne and Intigriti, via [arkadiyt/bounty-targets-data](https://github.com/arkadiyt/bounty-targets-data).
+- Platforms: HackerOne, Bugcrowd, and Intigriti, via [arkadiyt/bounty-targets-data](https://github.com/arkadiyt/bounty-targets-data).
 - Single user, local Python CLI. No accounts, no web UI.
-- Out of scope: Bugcrowd, git-history analysis, ML prediction, scraping.
+- Out of scope: git-history analysis, ML prediction, scraping.
 
 ## Requirements
 

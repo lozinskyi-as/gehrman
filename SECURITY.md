@@ -1,8 +1,9 @@
 # Security policy
 
 Gehrman is a **local, single-user CLI**. It does not scan, probe, or send
-requests to any bug bounty program's targets. It only downloads two public
-JSON catalogs and talks to a model API the user configured.
+requests to any bug bounty program's targets. It only downloads three public
+JSON catalogs (HackerOne, Bugcrowd, and Intigriti) and talks to a model API
+the user configured.
 
 This document describes trust boundaries for the thesis experiment
 (indirect prompt injection against an LLM agent) and for everyday use.

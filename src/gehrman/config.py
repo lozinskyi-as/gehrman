@@ -95,7 +95,9 @@ class ScoringConfig(BaseModel):
 
     `time_unit` documents how we *display* HackerOne average_time_* values.
     The unit is undocumented upstream, so we store raw numbers and never
-    convert them silently.
+    convert them silently. Bugcrowd and Intigriti catalogs expose payout
+    amounts (`max_payout`, `min_bounty` / `max_bounty`), not those time
+    fields.
     """
 
     model_config = ConfigDict(extra="forbid")
