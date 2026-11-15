@@ -2,8 +2,8 @@
 
 Gehrman is a **local, single-user CLI**. It does not scan, probe, or send
 requests to any bug bounty program's targets. It only downloads three public
-JSON catalogs (HackerOne, Bugcrowd, and Intigriti) and talks to a model API
-the user configured.
+JSON catalogs (HackerOne, Bugcrowd, and Intigriti) and talks to a local
+Ollama endpoint on the user's machine.
 
 This document describes trust boundaries for the thesis experiment
 (indirect prompt injection against an LLM agent) and for everyday use.
@@ -16,7 +16,7 @@ This document describes trust boundaries for the thesis experiment
 | Free-text catalog fields (`instruction`, `description`) | **Untrusted** | May contain injected instructions or false facts. Must be sanitized, marked, and optionally classified before they enter the model context. They must never influence scores. |
 | Model output (chat answers, tool-argument proposals, AI-guard JSON) | **Untrusted until checked** | Subject to `scope_check` and `number_check` (deterministic) and optional `ai_guard_output`. Displayed only after escaping. |
 | Researcher profile and defense switches in `config.toml` | **Trusted** | Written by `gehrman init` on the local machine. No secrets. |
-| OS keyring / `ANTHROPIC_API_KEY` | **Trusted secret** | Never written to `config.toml`, the database, or the audit log. |
+| Local Ollama endpoint (`http://localhost:11434/v1`) | **Trusted** | Loopback-only. Gehrman stores no credentials; the model runs on the user's machine. |
 | Tool implementations (search, get, explain, check_scope) | **Trusted code** | Read-only, pydantic-validated arguments, no network, no shell, no arbitrary file access. The agent opens SQLite with `mode=ro`. |
 
 ## What Gehrman will not do
@@ -28,9 +28,11 @@ This document describes trust boundaries for the thesis experiment
 
 ## Secrets
 
-- Anthropic API keys are stored with the `keyring` library (platform secret store).
-- Fallback: the `ANTHROPIC_API_KEY` environment variable.
-- `~/.config/gehrman/config.toml` must not contain secrets. The writer rejects known secret key names.
+Gehrman uses a local Ollama endpoint with no authentication, so it stores
+no API keys. `~/.config/gehrman/config.toml` is still written through a
+secret-key guard: any key named `api_key`, `apikey`, `secret`, `token`,
+or `password` is rejected, so a future provider that needs auth cannot
+silently land a credential on disk here.
 
 ## Reporting a vulnerability
 

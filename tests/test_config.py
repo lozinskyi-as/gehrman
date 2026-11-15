@@ -14,16 +14,12 @@ from gehrman.config import (
     load_config,
     save_config,
 )
-from gehrman.constants import ExperienceLevel, Skill
+from gehrman.constants import Skill
 from gehrman.paths import config_path
 
 
 def _sample_profile() -> ProfileConfig:
-    return ProfileConfig(
-        experience=ExperienceLevel.BEGINNER,
-        skills=[Skill.WEB, Skill.API],
-        bounty_only=True,
-    )
+    return ProfileConfig(skills=[Skill.WEB, Skill.API], bounty_only=True)
 
 
 def test_defenses_default_to_enabled() -> None:
@@ -38,24 +34,16 @@ def test_defenses_default_to_enabled() -> None:
 
 def test_unknown_skill_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        ProfileConfig(experience=ExperienceLevel.BEGINNER, skills=["firmware"])  # type: ignore[list-item]
-
-
-def test_unknown_experience_is_rejected() -> None:
-    with pytest.raises(ValidationError):
-        ProfileConfig(experience="expert", skills=[Skill.WEB])  # type: ignore[arg-type]
+        ProfileConfig(skills=["mobile"])  # type: ignore[list-item]
 
 
 def test_empty_skills_rejected() -> None:
     with pytest.raises(ValidationError):
-        ProfileConfig(experience=ExperienceLevel.BEGINNER, skills=[])
+        ProfileConfig(skills=[])
 
 
 def test_duplicate_skills_are_deduped() -> None:
-    profile = ProfileConfig(
-        experience=ExperienceLevel.INTERMEDIATE,
-        skills=[Skill.WEB, Skill.WEB, Skill.API],
-    )
+    profile = ProfileConfig(skills=[Skill.WEB, Skill.WEB, Skill.API])
     assert profile.skills == [Skill.WEB, Skill.API]
 
 
@@ -63,11 +51,7 @@ def test_unknown_config_key_is_rejected() -> None:
     with pytest.raises(ValidationError):
         AppConfig.model_validate(
             {
-                "profile": {
-                    "experience": "beginner",
-                    "skills": ["web"],
-                    "bounty_only": False,
-                },
+                "profile": {"skills": ["web"], "bounty_only": False},
                 "unexpected": True,
             }
         )

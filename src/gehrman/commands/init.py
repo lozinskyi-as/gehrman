@@ -1,8 +1,7 @@
 """Interactive (and scriptable) first-run setup.
 
-Collects the researcher profile and optionally an Anthropic API key.
-The profile is written to config.toml. The key is stored via keyring;
-if that fails, the user is told to set ANTHROPIC_API_KEY instead.
+Collects the researcher profile and the local Ollama model to use.
+Gehrman is local-only, so no API keys are prompted for or stored.
 """
 
 from __future__ import annotations
@@ -14,22 +13,17 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 
-from gehrman.config import AppConfig, ProfileConfig, save_config
-from gehrman.constants import EXPERIENCE_VALUES, SKILL_VALUES, ExperienceLevel, Skill
+from gehrman.config import AgentConfig, AiGuardConfig, AppConfig, ProfileConfig, save_config
+from gehrman.constants import (
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
+    SKILL_VALUES,
+    Skill,
+)
+from gehrman.ollama import OllamaUnavailableError, list_models
 from gehrman.paths import config_path
-from gehrman.secrets import SecretStoreError, store_anthropic_key
 
 console = Console()
-
-
-def _prompt_experience() -> ExperienceLevel:
-    raw = typer.prompt(f"Experience level [{'/'.join(EXPERIENCE_VALUES)}]")
-    try:
-        return ExperienceLevel(raw.strip().lower())
-    except ValueError as exc:
-        raise typer.BadParameter(
-            f"Experience must be one of: {', '.join(EXPERIENCE_VALUES)}"
-        ) from exc
 
 
 def _prompt_skills() -> list[Skill]:
@@ -43,22 +37,33 @@ def _prompt_skills() -> list[Skill]:
         raise typer.BadParameter(f"Skills must be from: {', '.join(SKILL_VALUES)}") from exc
 
 
-def _prompt_api_key() -> str | None:
-    raw = typer.prompt(
-        "Anthropic API key (leave empty to use ANTHROPIC_API_KEY later)",
-        default="",
-        hide_input=True,
-        show_default=False,
-    )
-    cleaned = raw.strip()
-    return cleaned or None
+def _prompt_model(base_url: str, default: str) -> str:
+    try:
+        models = list_models(base_url)
+    except OllamaUnavailableError as exc:
+        console.print(f"[yellow]Could not reach Ollama at {base_url}: {exc}[/yellow]")
+        return typer.prompt("Enter a model name manually", default=default)
+
+    if not models:
+        console.print(f"[yellow]Ollama at {base_url} has no models pulled.[/yellow]")
+        return typer.prompt("Enter a model name manually", default=default)
+
+    console.print("Available local Ollama models:")
+    for index, name in enumerate(models, start=1):
+        console.print(f"  {index}. {name}")
+    while True:
+        raw = typer.prompt("Choose a model (number)", default="1")
+        try:
+            choice = int(raw)
+        except ValueError:
+            console.print(f"[red]Enter a number between 1 and {len(models)}.[/red]")
+            continue
+        if 1 <= choice <= len(models):
+            return models[choice - 1]
+        console.print(f"[red]Enter a number between 1 and {len(models)}.[/red]")
 
 
 def init_command(
-    experience: Annotated[
-        ExperienceLevel | None,
-        typer.Option(case_sensitive=False, help="Researcher experience level."),
-    ] = None,
     skill: Annotated[
         list[Skill] | None,
         typer.Option(
@@ -72,26 +77,35 @@ def init_command(
             help="Only recommend programs that offer bounties.",
         ),
     ] = None,
-    api_key: Annotated[
+    base_url: Annotated[
         str | None,
         typer.Option(
-            "--api-key",
-            help="Anthropic API key. Stored in the OS keyring, never in config.toml.",
+            "--base-url",
+            help=f"Ollama OpenAI-compatible endpoint. Default: {DEFAULT_OLLAMA_BASE_URL}.",
         ),
     ] = None,
-    force: Annotated[
-        bool,
-        typer.Option("--force", help="Overwrite an existing config.toml without asking."),
-    ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Ollama model identifier. Skips the interactive menu.",
+        ),
+    ] = None,
+    ai_guard_model: Annotated[
+        str | None,
+        typer.Option(
+            "--ai-guard-model",
+            help="Classifier model for prompt-injection guards. Defaults to --model.",
+        ),
+    ] = None,
 ) -> None:
-    """Create ~/.config/gehrman/config.toml and store the API key in the keyring."""
+    """Create ~/.config/gehrman/config.toml."""
     target = config_path()
-    if target.is_file() and not force:
+    if target.is_file():
         if not typer.confirm(f"Config already exists at {target}. Overwrite?", default=False):
             console.print("Keeping the existing configuration.")
             raise typer.Exit(code=1)
 
-    resolved_experience = experience or _prompt_experience()
     resolved_skills = skill or _prompt_skills()
     if bounty_only is None:
         resolved_bounty_only = typer.confirm(
@@ -101,42 +115,36 @@ def init_command(
     else:
         resolved_bounty_only = bounty_only
 
+    resolved_base_url = base_url or DEFAULT_OLLAMA_BASE_URL
+    interactive = skill is None
+    if model:
+        resolved_model = model
+    elif interactive:
+        resolved_model = _prompt_model(resolved_base_url, DEFAULT_OLLAMA_MODEL)
+    else:
+        resolved_model = DEFAULT_OLLAMA_MODEL
+    resolved_ai_guard_model = ai_guard_model or resolved_model
+
     try:
         profile = ProfileConfig(
-            experience=resolved_experience,
             skills=resolved_skills,
             bounty_only=resolved_bounty_only,
         )
-        config = AppConfig(profile=profile)
+        agent = AgentConfig(base_url=resolved_base_url, model=resolved_model)
+        ai_guard = AiGuardConfig(model=resolved_ai_guard_model)
+        config = AppConfig(profile=profile, agent=agent, ai_guard=ai_guard)
     except ValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
     written = save_config(config)
     console.print(f"Wrote configuration to {written}")
 
-    resolved_key = api_key.strip() if api_key else None
-    # Empty --api-key should not overwrite; prompt only in interactive mode.
-    if resolved_key is None and experience is None and skill is None:
-        resolved_key = _prompt_api_key()
-
-    key_status = "not stored (set ANTHROPIC_API_KEY when you run the agent)"
-    if resolved_key:
-        try:
-            store_anthropic_key(resolved_key)
-            key_status = "stored in the OS keyring"
-        except (SecretStoreError, ValueError):
-            key_status = (
-                "keyring unavailable — export ANTHROPIC_API_KEY instead; "
-                "the key was not written to disk"
-            )
-            console.print(f"[yellow]{key_status}[/yellow]")
-
     skills_display = ", ".join(item.value for item in config.profile.skills)
     summary = (
-        f"Experience : {config.profile.experience.value}\n"
         f"Skills     : {skills_display}\n"
         f"Bounty only: {config.profile.bounty_only}\n"
-        f"API key    : {key_status}\n"
+        f"Ollama     : {config.agent.base_url} ({config.agent.model})\n"
+        f"AI guard   : {config.ai_guard.model}\n"
         f"Config     : {written}"
     )
     console.print(Panel(summary, title="Gehrman is ready", border_style="green"))

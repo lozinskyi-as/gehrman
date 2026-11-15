@@ -5,8 +5,10 @@ Developed as a thesis MVP under a Secure Software Development Life Cycle
 (NIST SSDF / SP 800-218A). The research experiment measures how well
 layered defenses protect the agent against **indirect prompt injection**.
 
-Gehrman is **passive**: it only reads public program catalogs. It never
-scans, probes, or contacts a program's targets.
+Gehrman is **passive and fully local**: it only reads public program
+catalogs and talks to a local [Ollama](https://ollama.com/) endpoint. It
+never scans, probes, or contacts a program's targets, and it stores no
+API keys.
 
 ## Scope
 
@@ -18,6 +20,9 @@ scans, probes, or contacts a program's targets.
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) for dependencies
+- A running local [Ollama](https://ollama.com/) with at least one model
+  pulled (for example `ollama pull llama3.1`). `gehrman init` lists the
+  models it finds on the endpoint so you can pick one.
 
 ## Install
 
@@ -30,24 +35,62 @@ uv run gehrman --help
 
 | Command | Status | Purpose |
 | --- | --- | --- |
-| `gehrman init` | Milestone 1 | Researcher profile + API key setup |
-| `gehrman update` | Later | Download catalogs, store snapshots, score |
-| `gehrman chat` | Later | Talk to the agent |
+| `gehrman init` | Milestone 1 | Write researcher profile and pick a local Ollama model |
+| `gehrman update` | Milestone 2 | Download catalogs, store snapshots, score |
+| `gehrman chat` | Later | Talk to the agent (local Ollama) |
+
+### `gehrman init`
+
+Interactive run: Gehrman queries the Ollama endpoint, prints a numbered
+list of installed models, and asks you to pick one. The selected model
+is used both as the agent model and (by default) as the AI-guard
+classifier.
 
 ```bash
 uv run gehrman init
-# or non-interactive (useful in scripts and tests)
-uv run gehrman init \
-  --experience beginner \
-  --skill web --skill api \
-  --bounty-only \
-  --api-key "$ANTHROPIC_API_KEY"
 ```
 
-`init` writes `~/.config/gehrman/config.toml` (no secrets) and stores the
-Anthropic API key in the OS keyring. If the keyring is unavailable, set
-`ANTHROPIC_API_KEY` instead.
+Non-interactive (scripts, tests): pass flags to skip every prompt. The
+`--model` flag skips the menu; `--ai-guard-model` overrides the
+classifier model if you want it separate from the agent model.
 
+```bash
+uv run gehrman init \
+  --skill web --skill api \
+  --bounty-only \
+  --model llama3.1:latest \
+  --ai-guard-model llama3.1:latest
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--skill` | Repeatable. `web` or `api` |
+| `--bounty-only` / `--all-programs` | Filter programs that pay bounties |
+| `--base-url` | Ollama OpenAI-compatible endpoint (default `http://localhost:11434/v1`) |
+| `--model` | Ollama model identifier; skips the interactive menu |
+| `--ai-guard-model` | Classifier model for prompt-injection guards; defaults to `--model` |
+
+If `config.toml` already exists, `init` asks before overwriting. If
+Ollama is unreachable or has no models pulled, the interactive menu
+falls back to a manual model-name prompt. The written config lives at
+`~/.config/gehrman/config.toml` and never contains secrets.
+
+### `gehrman update`
+
+Downloads the three public catalogs, validates them with pydantic,
+writes raw snapshots to `~/.local/share/gehrman/snapshots/<platform>/`
+(mode `0600`), and populates `~/.local/share/gehrman/gehrman.db` with
+normalized, scored program rows. The command only talks to the static
+CDN; it never contacts a program's targets.
+
+```bash
+uv run gehrman update                    # all three platforms
+uv run gehrman update --platform hackerone
+uv run gehrman update --dry-run          # fetch and parse, write nothing
+```
+
+Scoring is deterministic and is a pure function of `(program, profile)`;
+re-running `update` reproduces the same scores for the same snapshot.
 Override locations in tests or unusual setups:
 
 - `GEHRMAN_CONFIG_DIR` — directory for `config.toml` (default `~/.config/gehrman`)

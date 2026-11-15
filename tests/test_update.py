@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+
+from gehrman.catalogs.store import db_path, snapshot_dir
+from gehrman.cli import app
+from gehrman.config import AppConfig, ProfileConfig, save_config
+from gehrman.constants import CATALOG_URLS, Platform, Skill
+
+runner = CliRunner()
+
+
+def _write_config() -> None:
+    save_config(
+        AppConfig(
+            profile=ProfileConfig(skills=[Skill.WEB], bounty_only=True),
+        )
+    )
+
+
+def _fake_bodies() -> dict[str, bytes]:
+    h1 = [
+        {
+            "handle": "acme",
+            "name": "Acme",
+            "url": "https://hackerone.com/acme",
+            "submission_state": "open",
+            "offers_bounties": True,
+            "policy": "Be nice.",
+            "average_time_to_first_response": 6.0,
+            "targets": {
+                "in_scope": [{"asset_type": "URL", "asset_identifier": "acme.com"}],
+                "out_of_scope": [],
+            },
+        },
+        {
+            # Invalid: missing name — should be skipped, not crash.
+            "handle": "broken",
+            "url": "https://hackerone.com/broken",
+        },
+    ]
+    bugcrowd = [
+        {
+            "name": "Beta",
+            "url": "https://bugcrowd.com/beta",
+            "max_payout": 5000.0,
+            "targets": {
+                "in_scope": [{"type": "website", "uri": "beta.example"}],
+                "out_of_scope": [],
+            },
+        }
+    ]
+    intigriti = [
+        {
+            "id": "gamma",
+            "name": "Gamma",
+            "url": "https://app.intigriti.com/programs/x/gamma/detail",
+            "min_bounty": {"value": 250.0, "currency": "EUR"},
+            "max_bounty": {"value": 2500.0, "currency": "EUR"},
+            "targets": {
+                "in_scope": [{"type": "api", "uri": "api.gamma"}],
+                "out_of_scope": [],
+            },
+        }
+    ]
+    return {
+        CATALOG_URLS[Platform.HACKERONE]: json.dumps(h1).encode(),
+        CATALOG_URLS[Platform.BUGCROWD]: json.dumps(bugcrowd).encode(),
+        CATALOG_URLS[Platform.INTIGRITI]: json.dumps(intigriti).encode(),
+    }
+
+
+@pytest.fixture
+def fake_fetch(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
+    bodies = _fake_bodies()
+
+    def fake(url: str, **_: Any) -> bytes:
+        try:
+            return bodies[url]
+        except KeyError as exc:
+            raise AssertionError(f"unexpected URL: {url}") from exc
+
+    monkeypatch.setattr("gehrman.commands.update.fetch_catalog", fake)
+    return bodies
+
+
+def test_update_writes_snapshots_and_rows(
+    isolated_dirs: dict[str, Path], fake_fetch: dict[str, bytes]
+) -> None:
+    _write_config()
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.output
+
+    assert db_path().is_file()
+    with sqlite3.connect(db_path()) as conn:
+        rows = conn.execute(
+            "SELECT platform, handle, offers_bounty, score FROM programs ORDER BY platform, handle"
+        ).fetchall()
+    assert [r[0] for r in rows] == ["bugcrowd", "hackerone", "intigriti"]
+    assert all(r[2] == 1 for r in rows)
+    assert all(r[3] > 0 for r in rows)
+
+    for plat in Platform:
+        files = list((snapshot_dir() / plat.value).glob("*.json"))
+        assert len(files) == 1
+        assert files[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_update_dry_run_writes_nothing(
+    isolated_dirs: dict[str, Path], fake_fetch: dict[str, bytes]
+) -> None:
+    _write_config()
+    result = runner.invoke(app, ["update", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert not db_path().exists()
+    assert not snapshot_dir().exists()
+
+
+def test_update_single_platform(
+    isolated_dirs: dict[str, Path], fake_fetch: dict[str, bytes]
+) -> None:
+    _write_config()
+    result = runner.invoke(app, ["update", "--platform", "hackerone"])
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(db_path()) as conn:
+        platforms = [r[0] for r in conn.execute("SELECT DISTINCT platform FROM programs")]
+    assert platforms == ["hackerone"]
+
+
+def test_update_without_config_fails_cleanly(isolated_dirs: dict[str, Path]) -> None:
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert "gehrman init" in result.output

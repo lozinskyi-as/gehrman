@@ -1,8 +1,10 @@
 """Load and save the user configuration file.
 
-The file at ~/.config/gehrman/config.toml holds researcher preferences and
-defense switches. It must never contain secrets: API keys live in the OS
-keyring or in ANTHROPIC_API_KEY (see gehrman.secrets).
+The file at ~/.config/gehrman/config.toml holds researcher preferences
+and defense switches. It must never contain secrets. Gehrman talks to a
+local Ollama endpoint, so no API keys are stored; the secret-key guard
+below is kept as defense-in-depth against a future provider that needs
+one slipping onto disk here.
 
 Unknown keys are rejected so a typo in a defense switch cannot silently
 disable a control during the experiment.
@@ -18,7 +20,6 @@ import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gehrman.constants import (
-    DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_MAX_TOKENS_PER_MESSAGE,
     DEFAULT_MAX_TOOL_STEPS,
     DEFAULT_OLLAMA_BASE_URL,
@@ -26,30 +27,23 @@ from gehrman.constants import (
     DEFAULT_TEXT_TRUNCATE,
     DEFAULT_TIME_UNIT,
     DEFAULT_WEIGHTS_VERSION,
-    ExperienceLevel,
-    Provider,
     Skill,
 )
 from gehrman.paths import config_path, ensure_private_dir
 
-# Written at the top of every saved file as a reminder. tomli-w does not
-# preserve comments on rewrite, so we prepend this on every save.
 CONFIG_HEADER = (
     "# Gehrman configuration. Never store API keys or secrets in this file.\n"
-    "# Secrets belong in the OS keyring or in ANTHROPIC_API_KEY.\n"
 )
 
-# Keys that must never appear in the serialized config. Used as a belt-and-
-# suspenders check before writing and in tests.
+# Reject these keys if they ever appear in the serialized config. Belt
+# and suspenders for a future provider that needs auth.
 FORBIDDEN_SECRET_KEYS = frozenset(
     {
         "api_key",
         "apikey",
-        "anthropic_api_key",
         "secret",
         "token",
         "password",
-        "keyring",
     }
 )
 
@@ -59,14 +53,12 @@ class ProfileConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    experience: ExperienceLevel
     skills: list[Skill] = Field(min_length=1)
     bounty_only: bool = False
 
     @field_validator("skills")
     @classmethod
     def _unique_skills(cls, value: list[Skill]) -> list[Skill]:
-        # Preserve order while dropping duplicates.
         seen: set[Skill] = set()
         unique: list[Skill] = []
         for skill in value:
@@ -77,14 +69,12 @@ class ProfileConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Model and loop limits. Temperature is fixed at 0 in the agent."""
+    """Local Ollama endpoint and loop limits. Temperature is fixed at 0 in the agent."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Provider = Provider.ANTHROPIC
-    model: str = DEFAULT_ANTHROPIC_MODEL
-    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
-    ollama_model: str = DEFAULT_OLLAMA_MODEL
+    base_url: str = DEFAULT_OLLAMA_BASE_URL
+    model: str = DEFAULT_OLLAMA_MODEL
     max_tool_steps: int = Field(default=DEFAULT_MAX_TOOL_STEPS, ge=1, le=DEFAULT_MAX_TOOL_STEPS)
     max_tokens_per_message: int = Field(default=DEFAULT_MAX_TOKENS_PER_MESSAGE, ge=256)
     text_truncate: int = Field(default=DEFAULT_TEXT_TRUNCATE, ge=1)
@@ -128,7 +118,7 @@ class AiGuardConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str = DEFAULT_ANTHROPIC_MODEL
+    model: str = DEFAULT_OLLAMA_MODEL
 
 
 class AppConfig(BaseModel):

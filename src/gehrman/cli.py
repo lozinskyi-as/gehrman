@@ -8,6 +8,7 @@ import typer
 
 from gehrman import __version__
 from gehrman.commands.init import init_command
+from gehrman.commands.update import update_command
 
 app = typer.Typer(
     name="gehrman",
@@ -16,6 +17,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.command("init")(init_command)
+app.command("update")(update_command)
 
 
 def _version_callback(value: bool) -> None:
