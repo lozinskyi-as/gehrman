@@ -27,8 +27,15 @@ API keys.
 ## Install
 
 ```bash
-uv sync --all-groups
+uv sync
 uv run gehrman --help
+```
+
+The `dev` group (pytest, ruff, bandit, pip-audit, cyclonedx-bom) is opt-in.
+Install it only when you need those tools:
+
+```bash
+uv sync --group dev
 ```
 
 ## Commands
@@ -37,6 +44,7 @@ uv run gehrman --help
 | --- | --- | --- |
 | `gehrman init` | Milestone 1 | Write researcher profile and pick a local Ollama model |
 | `gehrman update` | Milestone 2 | Download catalogs, store snapshots, score |
+| `gehrman top` | Milestone 2 | List the highest-scored programs from the local snapshot |
 | `gehrman chat` | Later | Talk to the agent (local Ollama) |
 
 ### `gehrman init`
@@ -91,6 +99,27 @@ uv run gehrman update --dry-run          # fetch and parse, write nothing
 
 Scoring is deterministic and is a pure function of `(program, profile)`;
 re-running `update` reproduces the same scores for the same snapshot.
+
+### `gehrman top`
+
+Reads the SQLite store opened read-only and prints the highest-scored
+programs. Catalog strings (program name, URL, asset types) are escaped
+before rendering so a malicious name cannot inject Rich markup into your
+terminal.
+
+```bash
+uv run gehrman top                                   # top 10 overall
+uv run gehrman top --limit 25
+uv run gehrman top --platform bugcrowd
+uv run gehrman top --min-bounty 5000
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--limit` / `-n` | Rows to show (1–100, default 10) |
+| `--platform` | Restrict to `hackerone`, `bugcrowd`, or `intigriti` |
+| `--min-bounty` | Only programs with `bounty_max` ≥ this amount |
+
 Override locations in tests or unusual setups:
 
 - `GEHRMAN_CONFIG_DIR` — directory for `config.toml` (default `~/.config/gehrman`)
@@ -105,6 +134,8 @@ on. They are implemented in a later milestone; the flags exist now so
 experiments can turn controls on and off without a schema change.
 
 ## Development
+
+Install the dev group first (`uv sync --group dev`), then:
 
 ```bash
 uv run pytest

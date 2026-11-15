@@ -7,7 +7,9 @@ from typing import Annotated
 import typer
 
 from gehrman import __version__
+from gehrman.commands.chat import chat_command
 from gehrman.commands.init import init_command
+from gehrman.commands.top import top_command
 from gehrman.commands.update import update_command
 
 app = typer.Typer(
@@ -18,6 +20,8 @@ app = typer.Typer(
 )
 app.command("init")(init_command)
 app.command("update")(update_command)
+app.command("top")(top_command)
+app.command("chat")(chat_command)
 
 
 def _version_callback(value: bool) -> None:
