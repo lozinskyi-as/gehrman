@@ -180,7 +180,7 @@ def _connect_ro() -> sqlite3.Connection:
     return sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True)
 
 
-def _tool_search(raw: dict, config: AppConfig) -> dict:
+def _tool_search(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     del config  # search uses no defense hooks today.
     args = SearchArgs.model_validate(raw)
     clauses = ["score > 0"]
@@ -224,10 +224,10 @@ def _tool_search(raw: dict, config: AppConfig) -> dict:
         }
         for row in rows
     ]
-    return {"count": len(results), "results": results}
+    return {"count": len(results), "results": results}, []
 
 
-def _tool_get(raw: dict, config: AppConfig) -> dict:
+def _tool_get(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     del config
     args = GetArgs.model_validate(raw)
     conn = _connect_ro()
@@ -241,7 +241,7 @@ def _tool_get(raw: dict, config: AppConfig) -> dict:
     finally:
         conn.close()
     if row is None:
-        return {"found": False, "platform": args.platform.value, "handle": args.handle}
+        return {"found": False, "platform": args.platform.value, "handle": args.handle}, []
     return {
         "found": True,
         "platform": row[0],
@@ -255,10 +255,10 @@ def _tool_get(raw: dict, config: AppConfig) -> dict:
         "in_scope_count": row[8],
         "out_of_scope_count": row[9],
         "score": row[10],
-    }
+    }, []
 
 
-def _tool_explain(raw: dict, config: AppConfig) -> dict:
+def _tool_explain(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     args = ExplainArgs.model_validate(raw)
     conn = _connect_ro()
     try:
@@ -269,18 +269,23 @@ def _tool_explain(raw: dict, config: AppConfig) -> dict:
     finally:
         conn.close()
     if row is None:
-        return {"found": False}
+        return {"found": False}, []
     policy = row[0] or ""
-    policy = sanitize(policy, enabled=config.defenses.sanitize)
-    wrapped = data_marking(
+    fired: list[str] = []
+    policy, did_fire = sanitize(policy, enabled=config.defenses.sanitize)
+    if did_fire:
+        fired.append("sanitize")
+    wrapped, did_fire = data_marking(
         policy,
         source=f"{args.platform.value}:{args.handle}",
         enabled=config.defenses.data_marking,
     )
-    return {"found": True, "policy_excerpt": wrapped}
+    if did_fire:
+        fired.append("data_marking")
+    return {"found": True, "policy_excerpt": wrapped}, fired
 
 
-def _tool_check_scope(raw: dict, config: AppConfig) -> dict:
+def _tool_check_scope(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     del config
     args = CheckScopeArgs.model_validate(raw)
     conn = _connect_ro()
@@ -292,14 +297,14 @@ def _tool_check_scope(raw: dict, config: AppConfig) -> dict:
     finally:
         conn.close()
     if row is None:
-        return {"found": False}
+        return {"found": False}, []
     url = (row[0] or "").lower()
     candidate = args.candidate.lower().strip()
     return {
         "found": True,
         "in_scope": candidate in url,
         "note": "substring match; wildcard scope matching not implemented",
-    }
+    }, []
 
 
 _HANDLERS = {
@@ -310,7 +315,13 @@ _HANDLERS = {
 }
 
 
-def dispatch(name: str, raw_args: str | dict, config: AppConfig) -> dict:
+def dispatch(name: str, raw_args: str | dict, config: AppConfig) -> tuple[dict, list[str]]:
+    """Validate arguments, run the tool, and return `(result, fired_defenses)`.
+
+    `fired_defenses` names any input-side defense that actually modified
+    the tool's output (today: `sanitize`, `data_marking`). It is empty
+    for tools that have no defense hooks.
+    """
     handler = _HANDLERS.get(name)
     if handler is None:
         raise ToolError(f"Unknown tool: {name}")
