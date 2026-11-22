@@ -33,9 +33,17 @@ def _fake_bodies() -> dict[str, bytes]:
             "submission_state": "open",
             "offers_bounties": True,
             "policy": "Be nice.",
-            "average_time_to_first_response": 6.0,
+            "average_time_to_first_program_response": 6.0,
+            "response_efficiency_percentage": 90,
             "targets": {
-                "in_scope": [{"asset_type": "URL", "asset_identifier": "acme.com"}],
+                "in_scope": [
+                    {
+                        "asset_type": "URL",
+                        "asset_identifier": "acme.com",
+                        "eligible_for_bounty": True,
+                        "instruction": "do not let this text affect storage",
+                    }
+                ],
                 "out_of_scope": [],
             },
         },
@@ -51,7 +59,7 @@ def _fake_bodies() -> dict[str, bytes]:
             "url": "https://bugcrowd.com/beta",
             "max_payout": 5000.0,
             "targets": {
-                "in_scope": [{"type": "website", "uri": "beta.example"}],
+                "in_scope": [{"type": "website", "target": "beta.example", "uri": "beta.example"}],
                 "out_of_scope": [],
             },
         }
@@ -64,7 +72,13 @@ def _fake_bodies() -> dict[str, bytes]:
             "min_bounty": {"value": 250.0, "currency": "EUR"},
             "max_bounty": {"value": 2500.0, "currency": "EUR"},
             "targets": {
-                "in_scope": [{"type": "api", "uri": "api.gamma"}],
+                "in_scope": [
+                    {
+                        "type": "url",
+                        "endpoint": "api.gamma",
+                        "description": "free text must not be stored on the asset",
+                    }
+                ],
                 "out_of_scope": [],
             },
         }
@@ -102,9 +116,27 @@ def test_update_writes_snapshots_and_rows(
         rows = conn.execute(
             "SELECT platform, handle, offers_bounty, score FROM programs ORDER BY platform, handle"
         ).fetchall()
-    assert [r[0] for r in rows] == ["bugcrowd", "hackerone", "intigriti"]
-    assert all(r[2] == 1 for r in rows)
-    assert all(r[3] > 0 for r in rows)
+        assert [r[0] for r in rows] == ["bugcrowd", "hackerone", "intigriti"]
+        assert all(r[2] == 1 for r in rows)
+        assert all(r[3] > 0 for r in rows)
+
+        acme = conn.execute(
+            "SELECT average_time_to_first_response, response_efficiency_percentage, "
+            "in_scope_assets FROM programs WHERE platform = 'hackerone'"
+        ).fetchone()
+        assert acme[0] == 6.0
+        assert acme[1] == 90
+        acme_assets = json.loads(acme[2])
+        assert acme_assets == [{"identifier": "acme.com", "type": "web", "bounty_eligible": True}]
+        assert "instruction" not in acme[2]
+
+        gamma = conn.execute(
+            "SELECT in_scope_assets FROM programs WHERE platform = 'intigriti'"
+        ).fetchone()
+        assert json.loads(gamma[0]) == [
+            {"identifier": "api.gamma", "type": "web", "bounty_eligible": None}
+        ]
+        assert "description" not in gamma[0]
 
     for plat in Platform:
         files = list((snapshot_dir() / plat.value).glob("*.json"))
@@ -136,4 +168,5 @@ def test_update_single_platform(
 def test_update_without_config_fails_cleanly(isolated_dirs: dict[str, Path]) -> None:
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 1
-    assert "gehrman init" in result.output
+    # Rich wraps the path, so the two words may land on different lines.
+    assert "gehrman init" in result.output.replace("\n", "")

@@ -20,9 +20,13 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from gehrman.catalogs.models import Program
+from gehrman.catalogs.models import Program, ScopeAsset
 from gehrman.constants import Platform
 from gehrman.paths import data_dir, ensure_private_dir
+
+# Bump this when the tables change. `connect()` drops and recreates the
+# database so the next `gehrman update` rebuilds it from snapshots.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS programs (
@@ -34,12 +38,15 @@ CREATE TABLE IF NOT EXISTS programs (
   bounty_min REAL,
   bounty_max REAL,
   asset_types TEXT NOT NULL,
+  in_scope_assets TEXT NOT NULL DEFAULT '[]',
+  out_of_scope_assets TEXT NOT NULL DEFAULT '[]',
   in_scope_count INTEGER NOT NULL,
   out_of_scope_count INTEGER NOT NULL,
   submission_state TEXT,
   average_time_to_first_response REAL,
   average_time_to_bounty_awarded REAL,
   average_time_to_report_resolved REAL,
+  response_efficiency_percentage REAL,
   policy_excerpt TEXT NOT NULL,
   score REAL NOT NULL,
   fetched_at TEXT NOT NULL,
@@ -59,12 +66,35 @@ def snapshot_dir() -> Path:
     return data_dir() / "snapshots"
 
 
+def schema_is_current(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    current = int(row[0]) if row else 0
+    return current == SCHEMA_VERSION
+
+
+def _apply_schema(conn: sqlite3.Connection) -> bool:
+    """Create tables, or rebuild them when `user_version` is stale.
+
+    Returns True when an existing database was wiped because its schema
+    version did not match. A fresh database also reports True so the
+    version pragma is written, but there was nothing to keep.
+    """
+    rebuilt = not schema_is_current(conn)
+    if rebuilt:
+        conn.executescript("DROP TABLE IF EXISTS programs; DROP TABLE IF EXISTS asset_history;")
+    conn.executescript(SCHEMA)
+    if rebuilt:
+        # PRAGMA does not accept bound parameters. SCHEMA_VERSION is a constant.
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return rebuilt
+
+
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     ensure_private_dir(data_dir())
     conn = sqlite3.connect(db_path())
     try:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         yield conn
         conn.commit()
     except Exception:
@@ -87,6 +117,10 @@ def write_snapshot(platform: Platform, body: bytes, fetched_at: datetime) -> tup
     return path, sha
 
 
+def _dump_assets(assets: list[ScopeAsset]) -> str:
+    return json.dumps([asset.model_dump(mode="json") for asset in assets], separators=(",", ":"))
+
+
 def replace_platform_programs(
     conn: sqlite3.Connection,
     platform: Platform,
@@ -101,11 +135,13 @@ def replace_platform_programs(
         INSERT INTO programs (
           platform, handle, name, url, offers_bounty,
           bounty_min, bounty_max, asset_types,
+          in_scope_assets, out_of_scope_assets,
           in_scope_count, out_of_scope_count, submission_state,
           average_time_to_first_response, average_time_to_bounty_awarded,
-          average_time_to_report_resolved, policy_excerpt, score,
+          average_time_to_report_resolved, response_efficiency_percentage,
+          policy_excerpt, score,
           fetched_at, snapshot_sha256, snapshot_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -117,12 +153,15 @@ def replace_platform_programs(
                 program.bounty_min,
                 program.bounty_max,
                 json.dumps(program.asset_types),
+                _dump_assets(program.in_scope_assets),
+                _dump_assets(program.out_of_scope_assets),
                 program.in_scope_count,
                 program.out_of_scope_count,
                 program.submission_state,
                 program.average_time_to_first_response,
                 program.average_time_to_bounty_awarded,
                 program.average_time_to_report_resolved,
+                program.response_efficiency_percentage,
                 program.policy_excerpt,
                 score,
                 fetched_at.isoformat(),

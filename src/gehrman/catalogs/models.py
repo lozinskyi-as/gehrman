@@ -12,9 +12,9 @@ and data-marked downstream. Never render them with Rich markup.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from gehrman.constants import Platform
+from gehrman.constants import AssetType, Platform
 
 
 class RawTarget(BaseModel):
@@ -26,8 +26,12 @@ class RawTarget(BaseModel):
     asset_identifier: str | None = None
     eligible_for_bounty: bool | None = None
     type: str | None = None
+    # Bugcrowd identifier, in priority order target -> uri -> name.
+    target: str | None = None
     uri: str | None = None
     name: str | None = None
+    # Intigriti identifier.
+    endpoint: str | None = None
 
 
 class RawTargets(BaseModel):
@@ -46,9 +50,19 @@ class HackerOneProgram(BaseModel):
     submission_state: str | None = None
     offers_bounties: bool = False
     policy: str = ""
-    average_time_to_first_response: float | None = None
+    # The catalog key is average_time_to_first_program_response. The stored
+    # column keeps the shorter name. Both keys validate so fixtures written
+    # against either spelling still load.
+    average_time_to_first_response: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "average_time_to_first_program_response",
+            "average_time_to_first_response",
+        ),
+    )
     average_time_to_bounty_awarded: float | None = None
     average_time_to_report_resolved: float | None = None
+    response_efficiency_percentage: float | None = None
     targets: RawTargets = Field(default_factory=RawTargets)
 
 
@@ -80,6 +94,16 @@ class IntigritiProgram(BaseModel):
     targets: RawTargets = Field(default_factory=RawTargets)
 
 
+class ScopeAsset(BaseModel):
+    """One structured scope entry. Free-text target fields are not stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    identifier: str
+    type: AssetType
+    bounty_eligible: bool | None = None
+
+
 class Program(BaseModel):
     """Unified, storage-ready program record."""
 
@@ -93,10 +117,13 @@ class Program(BaseModel):
     bounty_min: float | None = None
     bounty_max: float | None = None
     asset_types: list[str] = Field(default_factory=list)
+    in_scope_assets: list[ScopeAsset] = Field(default_factory=list)
+    out_of_scope_assets: list[ScopeAsset] = Field(default_factory=list)
     in_scope_count: int = 0
     out_of_scope_count: int = 0
     submission_state: str | None = None
     average_time_to_first_response: float | None = None
     average_time_to_bounty_awarded: float | None = None
     average_time_to_report_resolved: float | None = None
+    response_efficiency_percentage: float | None = None
     policy_excerpt: str = ""

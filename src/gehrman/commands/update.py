@@ -10,6 +10,7 @@ the summary table — the table only shows counts.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -30,7 +31,13 @@ from gehrman.catalogs.normalize import (
     normalize_hackerone,
     normalize_intigriti,
 )
-from gehrman.catalogs.store import connect, replace_platform_programs, write_snapshot
+from gehrman.catalogs.store import (
+    SCHEMA_VERSION,
+    connect,
+    db_path,
+    replace_platform_programs,
+    write_snapshot,
+)
 from gehrman.config import load_config
 from gehrman.constants import CATALOG_URLS, Platform
 from gehrman.scoring import score_program
@@ -68,6 +75,19 @@ def _process_platform(
     return scored, skipped
 
 
+def _schema_is_stale() -> bool:
+    path = db_path()
+    if not path.is_file():
+        return False
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("PRAGMA user_version").fetchone()
+    finally:
+        conn.close()
+    current = int(row[0]) if row else 0
+    return current != SCHEMA_VERSION
+
+
 def update_command(
     platform: Annotated[
         list[Platform] | None,
@@ -95,6 +115,15 @@ def update_command(
     selected = list(dict.fromkeys(platform)) if platform else list(Platform)
     truncate = config.agent.text_truncate
     fetched_at = datetime.now(UTC)
+    if not dry_run and _schema_is_stale():
+        console.print(
+            "[yellow]Schema changed; the local database will be rebuilt by this update.[/yellow]"
+        )
+        if set(selected) != set(Platform):
+            console.print(
+                "[yellow]Only the selected platforms are refilled. "
+                "Run `gehrman update` with no --platform to restore the others.[/yellow]"
+            )
 
     rows: list[tuple[str, int, int, int]] = []
     for plat in selected:

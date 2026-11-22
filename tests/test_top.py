@@ -66,15 +66,37 @@ def _row(
 def test_top_errors_without_database(isolated_dirs: dict[str, Path]) -> None:
     result = runner.invoke(app, ["top"])
     assert result.exit_code == 1
-    assert "gehrman update" in result.output
+    # Rich wraps the path, so the two words may land on different lines.
+    assert "gehrman update" in result.output.replace("\n", "")
 
 
 def test_top_lists_highest_scores_first(isolated_dirs: dict[str, Path]) -> None:
     _insert(
         [
-            _row(platform="hackerone", handle="low", name="Low", bounty_max=100, score=1.5, assets=["URL"]),
-            _row(platform="bugcrowd", handle="high", name="High", bounty_max=10000, score=9.0, assets=["website"]),
-            _row(platform="intigriti", handle="mid", name="Mid", bounty_max=1000, score=4.0, assets=["api"]),
+            _row(
+                platform="hackerone",
+                handle="low",
+                name="Low",
+                bounty_max=100,
+                score=1.5,
+                assets=["URL"],
+            ),
+            _row(
+                platform="bugcrowd",
+                handle="high",
+                name="High",
+                bounty_max=10000,
+                score=9.0,
+                assets=["website"],
+            ),
+            _row(
+                platform="intigriti",
+                handle="mid",
+                name="Mid",
+                bounty_max=1000,
+                score=4.0,
+                assets=["api"],
+            ),
         ]
     )
     result = runner.invoke(app, ["top", "--limit", "2"])
@@ -88,8 +110,22 @@ def test_top_lists_highest_scores_first(isolated_dirs: dict[str, Path]) -> None:
 def test_top_filters_by_platform(isolated_dirs: dict[str, Path]) -> None:
     _insert(
         [
-            _row(platform="hackerone", handle="h1", name="One", bounty_max=5000, score=6.0, assets=["URL"]),
-            _row(platform="bugcrowd", handle="b1", name="Beta", bounty_max=5000, score=6.0, assets=["website"]),
+            _row(
+                platform="hackerone",
+                handle="h1",
+                name="One",
+                bounty_max=5000,
+                score=6.0,
+                assets=["URL"],
+            ),
+            _row(
+                platform="bugcrowd",
+                handle="b1",
+                name="Beta",
+                bounty_max=5000,
+                score=6.0,
+                assets=["website"],
+            ),
         ]
     )
     result = runner.invoke(app, ["top", "--platform", "bugcrowd"])
@@ -101,8 +137,22 @@ def test_top_filters_by_platform(isolated_dirs: dict[str, Path]) -> None:
 def test_top_filters_by_min_bounty(isolated_dirs: dict[str, Path]) -> None:
     _insert(
         [
-            _row(platform="hackerone", handle="cheap", name="Cheap", bounty_max=100, score=2.0, assets=["URL"]),
-            _row(platform="hackerone", handle="rich", name="Rich", bounty_max=20000, score=8.0, assets=["URL"]),
+            _row(
+                platform="hackerone",
+                handle="cheap",
+                name="Cheap",
+                bounty_max=100,
+                score=2.0,
+                assets=["URL"],
+            ),
+            _row(
+                platform="hackerone",
+                handle="rich",
+                name="Rich",
+                bounty_max=20000,
+                score=8.0,
+                assets=["URL"],
+            ),
         ]
     )
     result = runner.invoke(app, ["top", "--min-bounty", "1000"])
@@ -114,8 +164,22 @@ def test_top_filters_by_min_bounty(isolated_dirs: dict[str, Path]) -> None:
 def test_top_excludes_zero_scores(isolated_dirs: dict[str, Path]) -> None:
     _insert(
         [
-            _row(platform="hackerone", handle="z", name="Zero", bounty_max=None, score=0.0, assets=["URL"]),
-            _row(platform="hackerone", handle="p", name="Positive", bounty_max=500, score=3.0, assets=["URL"]),
+            _row(
+                platform="hackerone",
+                handle="z",
+                name="Zero",
+                bounty_max=None,
+                score=0.0,
+                assets=["URL"],
+            ),
+            _row(
+                platform="hackerone",
+                handle="p",
+                name="Positive",
+                bounty_max=500,
+                score=3.0,
+                assets=["URL"],
+            ),
         ]
     )
     result = runner.invoke(app, ["top"])
@@ -146,7 +210,16 @@ def test_top_escapes_rich_markup_in_names(isolated_dirs: dict[str, Path]) -> Non
 
 def test_top_uses_readonly_connection(isolated_dirs: dict[str, Path]) -> None:
     _insert(
-        [_row(platform="hackerone", handle="x", name="X", bounty_max=100, score=1.0, assets=["URL"])]
+        [
+            _row(
+                platform="hackerone",
+                handle="x",
+                name="X",
+                bounty_max=100,
+                score=1.0,
+                assets=["URL"],
+            )
+        ]
     )
     result = runner.invoke(app, ["top"])
     assert result.exit_code == 0, result.output

@@ -47,5 +47,16 @@ class Skill(StrEnum):
     API = "api"
 
 
+class AssetType(StrEnum):
+    """Normalized scope type. Unknown catalog types become `other`."""
+
+    WEB = "web"
+    WILDCARD = "wildcard"
+    API = "api"
+    MOBILE = "mobile"
+    OTHER = "other"
+
+
 SKILL_VALUES = tuple(skill.value for skill in Skill)
 PLATFORM_VALUES = tuple(platform.value for platform in Platform)
+ASSET_TYPE_VALUES = tuple(asset_type.value for asset_type in AssetType)
