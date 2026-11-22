@@ -19,6 +19,7 @@ from rich.table import Table
 
 from gehrman.catalogs.store import db_path
 from gehrman.constants import Platform
+from gehrman.scoring import format_why
 
 console = Console()
 
@@ -45,7 +46,7 @@ def top_command(
 
     query = (
         "SELECT platform, handle, name, url, bounty_max, asset_types, "
-        "in_scope_count, score FROM programs WHERE score > 0"
+        "in_scope_count, score, score_components, extras FROM programs WHERE score > 0"
     )
     args: list[object] = []
     if platform is not None:
@@ -61,7 +62,13 @@ def top_command(
     uri = f"file:{path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     try:
-        rows = conn.execute(query, args).fetchall()
+        try:
+            rows = conn.execute(query, args).fetchall()
+        except sqlite3.OperationalError as exc:
+            console.print(
+                f"[red]Database schema is out of date ({exc}). Run `gehrman update`.[/red]"
+            )
+            raise typer.Exit(code=1) from exc
     finally:
         conn.close()
 
@@ -75,18 +82,34 @@ def top_command(
     table.add_column("Score", justify="right")
     table.add_column("Platform")
     table.add_column("Program")
+    table.add_column("Why")
     table.add_column("Bounty $", justify="right")
     table.add_column("Scope", justify="right")
     table.add_column("Assets")
     table.add_column("URL")
-    for plat, handle, name, url, bounty_max, assets_json, in_scope, score in rows:
+    for (
+        plat,
+        handle,
+        name,
+        url,
+        bounty_max,
+        assets_json,
+        in_scope,
+        score,
+        components_json,
+        extras_json,
+    ) in rows:
         assets = ", ".join(json.loads(assets_json)[:4])
         bounty_display = f"{bounty_max:,.0f}" if bounty_max else "—"
         display_name = name or handle
+        components = json.loads(components_json or "{}")
+        extras = json.loads(extras_json or "{}")
+        why = format_why(components, extras, plat)
         table.add_row(
-            f"{score:.2f}",
+            f"{score:.1f}",
             escape(plat),
             escape(display_name),
+            escape(why),
             bounty_display,
             str(in_scope),
             escape(assets),

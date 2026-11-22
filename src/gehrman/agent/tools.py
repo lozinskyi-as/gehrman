@@ -18,6 +18,7 @@ from gehrman.agent.defenses import data_marking, sanitize
 from gehrman.catalogs.store import db_path
 from gehrman.config import AppConfig
 from gehrman.constants import PLATFORM_VALUES, SKILL_VALUES, Platform, Skill
+from gehrman.scoring import format_why
 
 MAX_SEARCH_LIMIT = 25
 
@@ -177,7 +178,72 @@ _SKILL_TAGS: dict[Skill, tuple[str, ...]] = {
 
 
 def _connect_ro() -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _object(text: str | None) -> dict[str, Any]:
+    if not text:
+        return {}
+    parsed = json.loads(text)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _decimal_strings(value: Any, out: list[str]) -> None:
+    """Canonical spellings of numbers so `number_check` accepts a repeated figure.
+
+    A value like 0.67 is extracted from an answer as ``67`` (the regex
+    starts a number after the decimal point). The string ``"0.67"`` seeds
+    that token. Whole values also keep a two-decimal form because the
+    why column prints components as ``1.00``.
+    """
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int):
+        out.append(str(value))
+    elif isinstance(value, float):
+        if value.is_integer():
+            whole = str(int(value))
+            out.append(whole)
+            out.append(f"{value:.1f}")
+            out.append(f"{int(value)}.00")
+        else:
+            out.append(f"{value:.2f}")
+            out.append(str(value))
+    elif isinstance(value, dict):
+        for item in value.values():
+            _decimal_strings(item, out)
+    elif isinstance(value, list):
+        for item in value:
+            _decimal_strings(item, out)
+
+
+def _with_figures(payload: dict[str, Any]) -> dict[str, Any]:
+    figures: list[str] = []
+    _decimal_strings(payload, figures)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in figures:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    if unique:
+        payload["figures"] = unique
+    return payload
+
+
+def _explained(row: sqlite3.Row, **fields: Any) -> dict[str, Any]:
+    components = _object(row["score_components"])
+    extras = _object(row["extras"])
+    payload: dict[str, Any] = {
+        **fields,
+        "score": row["score"],
+        "score_components": components,
+        "extras": extras,
+        "why": format_why(components, extras, row["platform"]),
+    }
+    return _with_figures(payload)
 
 
 def _tool_search(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
@@ -200,7 +266,7 @@ def _tool_search(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
         binds.extend(f'%"{tag}"%' for tag in tags)
     query = (
         "SELECT platform, handle, name, url, offers_bounty, bounty_max, "
-        "asset_types, in_scope_count, score FROM programs WHERE "
+        "asset_types, in_scope_count, score, score_components, extras FROM programs WHERE "
         + " AND ".join(clauses)
         + " ORDER BY score DESC, bounty_max DESC, handle ASC LIMIT ?"
     )
@@ -211,17 +277,17 @@ def _tool_search(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     finally:
         conn.close()
     results = [
-        {
-            "platform": row[0],
-            "handle": row[1],
-            "name": row[2],
-            "url": row[3],
-            "offers_bounty": bool(row[4]),
-            "bounty_max": row[5],
-            "asset_types": json.loads(row[6]),
-            "in_scope_count": row[7],
-            "score": row[8],
-        }
+        _explained(
+            row,
+            platform=row["platform"],
+            handle=row["handle"],
+            name=row["name"],
+            url=row["url"],
+            offers_bounty=bool(row["offers_bounty"]),
+            bounty_max=row["bounty_max"],
+            asset_types=json.loads(row["asset_types"]),
+            in_scope_count=row["in_scope_count"],
+        )
         for row in rows
     ]
     return {"count": len(results), "results": results}, []
@@ -234,7 +300,7 @@ def _tool_get(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     try:
         row = conn.execute(
             "SELECT platform, handle, name, url, offers_bounty, bounty_min, bounty_max, "
-            "asset_types, in_scope_count, out_of_scope_count, score "
+            "asset_types, in_scope_count, out_of_scope_count, score, score_components, extras "
             "FROM programs WHERE platform = ? AND handle = ?",
             (args.platform.value, args.handle),
         ).fetchone()
@@ -242,20 +308,20 @@ def _tool_get(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
         conn.close()
     if row is None:
         return {"found": False, "platform": args.platform.value, "handle": args.handle}, []
-    return {
-        "found": True,
-        "platform": row[0],
-        "handle": row[1],
-        "name": row[2],
-        "url": row[3],
-        "offers_bounty": bool(row[4]),
-        "bounty_min": row[5],
-        "bounty_max": row[6],
-        "asset_types": json.loads(row[7]),
-        "in_scope_count": row[8],
-        "out_of_scope_count": row[9],
-        "score": row[10],
-    }, []
+    return _explained(
+        row,
+        found=True,
+        platform=row["platform"],
+        handle=row["handle"],
+        name=row["name"],
+        url=row["url"],
+        offers_bounty=bool(row["offers_bounty"]),
+        bounty_min=row["bounty_min"],
+        bounty_max=row["bounty_max"],
+        asset_types=json.loads(row["asset_types"]),
+        in_scope_count=row["in_scope_count"],
+        out_of_scope_count=row["out_of_scope_count"],
+    ), []
 
 
 def _tool_explain(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:

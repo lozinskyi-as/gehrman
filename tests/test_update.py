@@ -130,10 +130,19 @@ def test_update_writes_snapshots_and_rows(
         assert acme_assets == [{"identifier": "acme.com", "type": "web", "bounty_eligible": True}]
         assert "instruction" not in acme[2]
         components = conn.execute(
-            "SELECT score_components FROM programs WHERE platform = 'hackerone'"
+            "SELECT score_components, extras FROM programs WHERE platform = 'hackerone'"
         ).fetchone()
         assert json.loads(components[0])["skill_fit"] == 1.0
         assert "policy" not in components[0]
+        h1_extras = json.loads(components[1])
+        assert h1_extras["response_efficiency_p"] == 100
+        assert h1_extras["first_response_p"] == 100
+        assert h1_extras["bounty_eligible_share"] == 1
+        assert "6.0" not in components[1]
+        assert "90" not in components[1]
+
+        beta = conn.execute("SELECT extras FROM programs WHERE platform = 'bugcrowd'").fetchone()
+        assert json.loads(beta[0])["max_payout"] == 5000
 
         gamma = conn.execute(
             "SELECT in_scope_assets FROM programs WHERE platform = 'intigriti'"

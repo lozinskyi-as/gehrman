@@ -150,20 +150,13 @@ def update_command(
 
     rows: list[tuple[str, int, int, int]] = []
     for plat, body, programs, skipped in fetched:
-        scored = [
-            (
-                program,
-                by_key[(program.platform, program.handle)].score,
-                by_key[(program.platform, program.handle)].components,
-            )
-            for program in programs
-        ]
+        scored = [(program, by_key[(program.platform, program.handle)]) for program in programs]
         if not dry_run:
             snapshot_path, sha = write_snapshot(plat, body, fetched_at)
             with connect() as conn:
                 replace_platform_programs(conn, plat, scored, fetched_at, snapshot_path, sha)
 
-        nonzero = sum(1 for _, score, _ in scored if score > 0)
+        nonzero = sum(1 for _, result in scored if result.score > 0)
         rows.append((plat.value, len(programs), skipped, nonzero))
 
     table = Table(title="Gehrman update summary")

@@ -160,6 +160,121 @@ def breadth_component(program: Program, scope_logs: list[float]) -> float:
     return min(1.0, rank + bonus)
 
 
+def public_number(value: float) -> int | float:
+    """Stable JSON number. Whole values stay integers so 5000 is not 5000.0."""
+    rounded = round(float(value), SCORING_PARAMS.component_decimals)
+    if rounded.is_integer():
+        return int(rounded)
+    return rounded
+
+
+# HackerOne time fields are lower-is-better. The unit is undocumented, so
+# extras store a within-platform percentile and never the raw value.
+_HACKERONE_METRICS: tuple[tuple[str, str, bool], ...] = (
+    ("first_response_p", "average_time_to_first_response", True),
+    ("report_resolved_p", "average_time_to_report_resolved", True),
+    ("bounty_awarded_p", "average_time_to_bounty_awarded", True),
+    ("response_efficiency_p", "response_efficiency_percentage", False),
+)
+
+
+def _percentile_points(value: float, population: list[float], *, lower_is_better: bool) -> int:
+    if lower_is_better:
+        fraction = sum(1 for item in population if item >= value) / len(population)
+    else:
+        fraction = percentile_rank(value, population)
+    return int(round(100 * fraction))
+
+
+def _hackerone_extras(program: Program, programs: list[Program]) -> dict[str, object]:
+    peers = [item for item in programs if item.platform is Platform.HACKERONE]
+    extras: dict[str, object] = {}
+    for key, attr, lower_is_better in _HACKERONE_METRICS:
+        value = getattr(program, attr)
+        if value is None:
+            continue
+        population = [
+            float(getattr(item, attr)) for item in peers if getattr(item, attr) is not None
+        ]
+        if not population:
+            continue
+        extras[key] = _percentile_points(float(value), population, lower_is_better=lower_is_better)
+    if program.in_scope_assets:
+        eligible = sum(1 for asset in program.in_scope_assets if asset.bounty_eligible is True)
+        extras["bounty_eligible_share"] = public_number(eligible / len(program.in_scope_assets))
+    return extras
+
+
+def _bounty_span(value: float | None, currency: str | None) -> dict[str, object] | None:
+    if value is None and currency is None:
+        return None
+    payload: dict[str, object] = {}
+    if value is not None:
+        payload["value"] = public_number(value)
+    if currency:
+        payload["currency"] = currency
+    return payload
+
+
+def platform_extras(program: Program, programs: list[Program]) -> dict[str, object]:
+    """Platform-only facts. Displayed, and never an input to the score."""
+    if program.platform is Platform.HACKERONE:
+        return _hackerone_extras(program, programs)
+    if program.platform is Platform.BUGCROWD:
+        extras: dict[str, object] = {}
+        if program.bounty_max is not None:
+            extras["max_payout"] = public_number(program.bounty_max)
+        extras["safe_harbor"] = program.safe_harbor
+        extras["allows_disclosure"] = program.allows_disclosure
+        return extras
+    extras = {
+        "two_factor_required": program.two_factor_required,
+        "tac_required": program.tac_required,
+    }
+    min_bounty = _bounty_span(program.bounty_min, program.bounty_min_currency)
+    max_bounty = _bounty_span(program.bounty_max, program.bounty_max_currency)
+    if min_bounty is not None:
+        extras["min_bounty"] = min_bounty
+    if max_bounty is not None:
+        extras["max_bounty"] = max_bounty
+    return extras
+
+
+def format_why(
+    components: Mapping[str, float],
+    extras: Mapping[str, object],
+    platform: str,
+) -> str:
+    """One compact reason string for `gehrman top` and the agent."""
+    parts: list[str] = []
+    if "skill_fit" in components:
+        parts.append(f"fit {components['skill_fit']:.2f}")
+    if "breadth" in components:
+        parts.append(f"breadth {components['breadth']:.2f}")
+    if platform == Platform.HACKERONE.value:
+        for key, label in (
+            ("response_efficiency_p", "H1 response"),
+            ("first_response_p", "H1 first response"),
+        ):
+            value = extras.get(key)
+            if isinstance(value, int | float):
+                parts.append(f"{label} p{int(value)}")
+                break
+    elif platform == Platform.BUGCROWD.value and isinstance(extras.get("max_payout"), int | float):
+        parts.append(f"payout {int(extras['max_payout'])}")
+    elif platform == Platform.INTIGRITI.value and isinstance(extras.get("max_bounty"), dict):
+        bounty = extras["max_bounty"]
+        amount = bounty.get("value") if isinstance(bounty, dict) else None
+        if isinstance(amount, int | float):
+            parts.append(f"max {int(amount)}")
+    new_assets = extras.get("new_assets_30d")
+    if isinstance(new_assets, int) and new_assets > 0:
+        parts.append(f"new {new_assets}")
+    if extras.get("new_program") is True:
+        parts.append("new program")
+    return " · ".join(parts)
+
+
 def combine_score(components: Mapping[str, float]) -> float:
     """Weighted mean of the components that are present, scaled to [0, 100]."""
     total_weight = 0.0
@@ -200,5 +315,11 @@ def score_programs(
             score = 0.0
         else:
             score = combine_score(components)
-        results.append(ScoreResult(score=score, components=components, extras={}))
+        results.append(
+            ScoreResult(
+                score=score,
+                components=components,
+                extras=platform_extras(program, programs),
+            )
+        )
     return results

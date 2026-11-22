@@ -206,6 +206,25 @@ def test_intigriti_uses_endpoint_and_drops_description() -> None:
     assert "instruction" not in dumped
 
 
+def test_intigriti_reads_camel_case_requirement_flags() -> None:
+    entry = IntigritiProgram.model_validate(
+        {
+            "name": "Gamma",
+            "url": "https://app.intigriti.com/programs/x/gamma/detail",
+            "tacRequired": True,
+            "twoFactorRequired": False,
+            "min_bounty": {"value": 10, "currency": "GBP"},
+            "max_bounty": {"value": 20, "currency": "GBP"},
+            "targets": {"in_scope": [], "out_of_scope": []},
+        }
+    )
+    program = normalize_intigriti(entry, truncate=10)
+    assert program.tac_required is True
+    assert program.two_factor_required is False
+    assert program.bounty_min_currency == "GBP"
+    assert program.bounty_max_currency == "GBP"
+
+
 def test_unknown_asset_type_maps_to_other() -> None:
     entry = HackerOneProgram(
         handle="acme",

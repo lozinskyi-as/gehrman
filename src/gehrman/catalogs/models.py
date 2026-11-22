@@ -73,6 +73,7 @@ class BugcrowdProgram(BaseModel):
     url: str
     max_payout: float | None = None
     allows_disclosure: bool | None = None
+    safe_harbor: str | None = None
     targets: RawTargets = Field(default_factory=RawTargets)
 
 
@@ -91,6 +92,15 @@ class IntigritiProgram(BaseModel):
     url: str
     min_bounty: IntigritiBountyRange | None = None
     max_bounty: IntigritiBountyRange | None = None
+    # The catalog uses camelCase. Both spellings validate.
+    two_factor_required: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("twoFactorRequired", "two_factor_required"),
+    )
+    tac_required: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("tacRequired", "tac_required"),
+    )
     targets: RawTargets = Field(default_factory=RawTargets)
 
 
@@ -116,6 +126,12 @@ class Program(BaseModel):
     offers_bounty: bool
     bounty_min: float | None = None
     bounty_max: float | None = None
+    bounty_min_currency: str | None = None
+    bounty_max_currency: str | None = None
+    safe_harbor: str | None = None
+    allows_disclosure: bool | None = None
+    two_factor_required: bool | None = None
+    tac_required: bool | None = None
     asset_types: list[str] = Field(default_factory=list)
     in_scope_assets: list[ScopeAsset] = Field(default_factory=list)
     out_of_scope_assets: list[ScopeAsset] = Field(default_factory=list)

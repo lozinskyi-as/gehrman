@@ -19,6 +19,7 @@ from gehrman.constants import DEFAULT_WEIGHTS_VERSION, AssetType, Platform, Skil
 from gehrman.scoring import (
     SCORING_PARAMS,
     combine_score,
+    format_why,
     score_programs,
     skill_fit,
 )
@@ -68,6 +69,93 @@ def _score(
         if candidate.handle == program.handle and candidate.platform == program.platform:
             return result
     raise AssertionError("program missing from score result")
+
+
+def test_platform_extras_do_not_change_the_score_and_hide_raw_times() -> None:
+    fast = _program(
+        handle="fast",
+        average_time_to_first_response=12.0,
+        average_time_to_report_resolved=40.0,
+        average_time_to_bounty_awarded=20.0,
+        response_efficiency_percentage=95,
+        assets=[
+            ScopeAsset(identifier="pay.example", type=AssetType.WEB, bounty_eligible=True),
+            ScopeAsset(identifier="free.example", type=AssetType.WEB, bounty_eligible=False),
+        ],
+    )
+    slow = _program(
+        handle="slow",
+        average_time_to_first_response=34551.0,
+        average_time_to_report_resolved=9000.0,
+        average_time_to_bounty_awarded=8000.0,
+        response_efficiency_percentage=5,
+        assets=[
+            ScopeAsset(identifier="pay.example", type=AssetType.WEB, bounty_eligible=True),
+            ScopeAsset(identifier="free.example", type=AssetType.WEB, bounty_eligible=False),
+        ],
+    )
+    fast_result, slow_result = score_programs([fast, slow], _profile())
+    assert fast_result.score == slow_result.score
+    assert fast_result.components == slow_result.components
+    assert fast_result.extras["first_response_p"] > slow_result.extras["first_response_p"]
+    assert fast_result.extras["response_efficiency_p"] > slow_result.extras["response_efficiency_p"]
+    assert fast_result.extras["bounty_eligible_share"] == 0.5
+    dumped = str(fast_result.extras) + str(slow_result.extras)
+    assert "34551" not in dumped
+    assert "9000" not in dumped
+    assert "12.0" not in dumped
+
+
+def test_bugcrowd_and_intigriti_extras_are_display_only() -> None:
+    generous = _program(
+        platform=Platform.BUGCROWD,
+        handle="generous",
+        bounty_max=20000.0,
+        safe_harbor="full",
+        allows_disclosure=True,
+    )
+    quiet = _program(
+        platform=Platform.BUGCROWD,
+        handle="quiet",
+        bounty_max=20000.0,
+        safe_harbor="partial",
+        allows_disclosure=False,
+    )
+    euro = _program(
+        platform=Platform.INTIGRITI,
+        handle="euro",
+        bounty_min=100.0,
+        bounty_max=4000.0,
+        bounty_min_currency="EUR",
+        bounty_max_currency="EUR",
+        two_factor_required=False,
+        tac_required=True,
+    )
+    results = {
+        program.handle: result
+        for program, result in zip(
+            (generous, quiet, euro),
+            score_programs([generous, quiet, euro], _profile()),
+            strict=True,
+        )
+    }
+    assert results["generous"].score == results["quiet"].score
+    assert results["generous"].extras["max_payout"] == 20000
+    assert results["generous"].extras["safe_harbor"] == "full"
+    assert results["generous"].extras["allows_disclosure"] is True
+    assert results["euro"].extras["min_bounty"] == {"value": 100, "currency": "EUR"}
+    assert results["euro"].extras["max_bounty"] == {"value": 4000, "currency": "EUR"}
+    assert results["euro"].extras["tac_required"] is True
+    assert results["euro"].score == results["generous"].score
+
+
+def test_why_column_quotes_components_and_a_platform_extra() -> None:
+    text = format_why(
+        {"skill_fit": 0.67, "breadth": 0.81, "pays": 1.0},
+        {"response_efficiency_p": 80, "new_assets_30d": 2, "new_program": True},
+        Platform.HACKERONE.value,
+    )
+    assert text == "fit 0.67 · breadth 0.81 · H1 response p80 · new 2 · new program"
 
 
 def test_weights_version_is_v2() -> None:

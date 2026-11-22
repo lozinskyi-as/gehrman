@@ -208,6 +208,37 @@ def test_top_escapes_rich_markup_in_names(isolated_dirs: dict[str, Path]) -> Non
     assert "[red]PWN[/red]" in collapsed
 
 
+def test_top_shows_a_why_column(isolated_dirs: dict[str, Path]) -> None:
+    _insert(
+        [
+            _row(
+                platform="hackerone",
+                handle="why",
+                name="Why",
+                bounty_max=5000,
+                score=67.5,
+                assets=["URL"],
+            )
+        ]
+    )
+    with connect() as conn:
+        conn.execute(
+            "UPDATE programs SET score_components = ?, extras = ? WHERE handle = ?",
+            (
+                json.dumps({"skill_fit": 0.67, "breadth": 0.81, "pays": 1.0}),
+                json.dumps({"response_efficiency_p": 80}),
+                "why",
+            ),
+        )
+    result = runner.invoke(app, ["top"], env={"COLUMNS": "240"})
+    assert result.exit_code == 0, result.output
+    collapsed = "".join(result.output.split())
+    assert "fit0.67" in collapsed
+    assert "breadth0.81" in collapsed
+    assert "H1responsep80" in collapsed
+    assert "67.5" in collapsed
+
+
 def test_top_uses_readonly_connection(isolated_dirs: dict[str, Path]) -> None:
     _insert(
         [

@@ -121,6 +121,8 @@ def normalize_bugcrowd(entry: BugcrowdProgram, truncate: int) -> Program:
         url=entry.url,
         offers_bounty=offers,
         bounty_max=entry.max_payout,
+        safe_harbor=entry.safe_harbor,
+        allows_disclosure=entry.allows_disclosure,
         asset_types=_asset_types(entry.targets.in_scope),
         in_scope_assets=_scope_assets(Platform.BUGCROWD, entry.targets.in_scope),
         out_of_scope_assets=_scope_assets(Platform.BUGCROWD, entry.targets.out_of_scope),
@@ -133,6 +135,8 @@ def normalize_intigriti(entry: IntigritiProgram, truncate: int) -> Program:
     del truncate
     bounty_min = entry.min_bounty.value if entry.min_bounty else None
     bounty_max = entry.max_bounty.value if entry.max_bounty else None
+    bounty_min_currency = entry.min_bounty.currency if entry.min_bounty else None
+    bounty_max_currency = entry.max_bounty.currency if entry.max_bounty else None
     offers = (bounty_max or 0) > 0 or (bounty_min or 0) > 0
     handle = entry.id or _handle_from_url(entry.url, entry.name)
     return Program(
@@ -143,6 +147,10 @@ def normalize_intigriti(entry: IntigritiProgram, truncate: int) -> Program:
         offers_bounty=bool(offers),
         bounty_min=bounty_min,
         bounty_max=bounty_max,
+        bounty_min_currency=bounty_min_currency,
+        bounty_max_currency=bounty_max_currency,
+        two_factor_required=entry.two_factor_required,
+        tac_required=entry.tac_required,
         asset_types=_asset_types(entry.targets.in_scope),
         in_scope_assets=_scope_assets(Platform.INTIGRITI, entry.targets.in_scope),
         out_of_scope_assets=_scope_assets(Platform.INTIGRITI, entry.targets.out_of_scope),

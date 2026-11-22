@@ -61,9 +61,7 @@ def _extract_numbers(text: str) -> set[str]:
     return {m.group(0).replace(",", "") for m in _NUMBER_RE.finditer(text)}
 
 
-def scope_check(
-    text: str, *, enabled: bool, allowed_hosts: Iterable[str]
-) -> tuple[bool, str]:
+def scope_check(text: str, *, enabled: bool, allowed_hosts: Iterable[str]) -> tuple[bool, str]:
     """Every hostname in `text` must appear in `allowed_hosts`.
 
     `allowed_hosts` is seeded from trusted structured tool fields and
@@ -82,9 +80,7 @@ def scope_check(
     return False, f"{len(unknown)} unknown host(s)"
 
 
-def number_check(
-    text: str, *, enabled: bool, allowed_numbers: Iterable[str]
-) -> tuple[bool, str]:
+def number_check(text: str, *, enabled: bool, allowed_numbers: Iterable[str]) -> tuple[bool, str]:
     """Every multi-digit number in `text` must have been seeded this turn."""
     if not enabled:
         return True, ""
@@ -108,26 +104,42 @@ def number_check(
 TRUSTED_ALLOWLIST_KEYS = frozenset(
     {
         "asset_types",
+        "bounty_awarded_p",
+        "bounty_eligible_share",
         "bounty_max",
         "bounty_min",
+        "breadth",
         "count",
+        "extras",
+        "figures",
+        "first_response_p",
         "found",
+        "freshness",
         "handle",
         "in_scope",
         "in_scope_count",
+        "max_bounty",
+        "min_bounty",
+        "new_assets_30d",
+        "new_program",
         "offers_bounty",
         "out_of_scope_count",
+        "pays",
         "platform",
+        "report_resolved_p",
+        "response_efficiency_p",
         "results",
         "score",
+        "score_components",
+        "skill_fit",
         "url",
+        "value",
+        "why",
     }
 )
 
 
-def collect_allowed_from_result(
-    result: Any, hosts_out: set[str], numbers_out: set[str]
-) -> None:
+def collect_allowed_from_result(result: Any, hosts_out: set[str], numbers_out: set[str]) -> None:
     """Seed allow-sets from trusted structured fields only.
 
     Keys outside `TRUSTED_ALLOWLIST_KEYS` are skipped, including

@@ -23,10 +23,11 @@ from pathlib import Path
 from gehrman.catalogs.models import Program, ScopeAsset
 from gehrman.constants import Platform
 from gehrman.paths import data_dir, ensure_private_dir
+from gehrman.scoring import ScoreResult
 
 # Bump this when the tables change. `connect()` drops and recreates the
 # database so the next `gehrman update` rebuilds it from snapshots.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS programs (
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS programs (
   policy_excerpt TEXT NOT NULL,
   score REAL NOT NULL,
   score_components TEXT NOT NULL DEFAULT '{}',
+  extras TEXT NOT NULL DEFAULT '{}',
   fetched_at TEXT NOT NULL,
   snapshot_sha256 TEXT NOT NULL,
   snapshot_path TEXT NOT NULL,
@@ -125,7 +127,7 @@ def _dump_assets(assets: list[ScopeAsset]) -> str:
 def replace_platform_programs(
     conn: sqlite3.Connection,
     platform: Platform,
-    scored: list[tuple[Program, float, dict[str, float]]],
+    scored: list[tuple[Program, ScoreResult]],
     fetched_at: datetime,
     snapshot_path: Path,
     snapshot_sha256: str,
@@ -139,10 +141,10 @@ def replace_platform_programs(
           in_scope_assets, out_of_scope_assets,
           in_scope_count, out_of_scope_count, submission_state,
           average_time_to_first_response, average_time_to_bounty_awarded,
-          average_time_to_report_resolved,           response_efficiency_percentage,
-          policy_excerpt, score, score_components,
+          average_time_to_report_resolved, response_efficiency_percentage,
+          policy_excerpt, score, score_components, extras,
           fetched_at, snapshot_sha256, snapshot_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -164,12 +166,13 @@ def replace_platform_programs(
                 program.average_time_to_report_resolved,
                 program.response_efficiency_percentage,
                 program.policy_excerpt,
-                score,
-                json.dumps(components, separators=(",", ":")),
+                result.score,
+                json.dumps(result.components, separators=(",", ":")),
+                json.dumps(result.extras, separators=(",", ":")),
                 fetched_at.isoformat(),
                 snapshot_sha256,
                 str(snapshot_path),
             )
-            for program, score, components in scored
+            for program, result in scored
         ],
     )
