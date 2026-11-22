@@ -282,6 +282,10 @@ def _tool_explain(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     )
     if did_fire:
         fired.append("data_marking")
+    # `policy_excerpt` is untrusted catalog text. It is not in
+    # TRUSTED_ALLOWLIST_KEYS, so a canary planted here cannot seed
+    # scope_check or number_check. Program `name` is omitted for the
+    # same reason: it is catalog text, not a structured identifier.
     return {"found": True, "policy_excerpt": wrapped}, fired
 
 

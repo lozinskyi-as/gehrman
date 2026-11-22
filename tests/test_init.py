@@ -60,23 +60,11 @@ def test_init_rejects_unknown_skill(isolated_dirs: dict[str, Path]) -> None:
     assert result.exit_code != 0
 
 
-def test_init_with_model_flag_sets_both_models(isolated_dirs: dict[str, Path]) -> None:
+def test_init_with_model_flag(isolated_dirs: dict[str, Path]) -> None:
     result = runner.invoke(app, [*_init_args(), "--model", "digitsflow/bonsai-8b:latest"])
     assert result.exit_code == 0, result.output
     config = load_config()
     assert config.agent.model == "digitsflow/bonsai-8b:latest"
-    assert config.ai_guard.model == "digitsflow/bonsai-8b:latest"
-
-
-def test_ai_guard_model_flag_overrides(isolated_dirs: dict[str, Path]) -> None:
-    result = runner.invoke(
-        app,
-        [*_init_args(), "--model", "big:latest", "--ai-guard-model", "small:latest"],
-    )
-    assert result.exit_code == 0, result.output
-    config = load_config()
-    assert config.agent.model == "big:latest"
-    assert config.ai_guard.model == "small:latest"
 
 
 def test_init_with_base_url_flag(isolated_dirs: dict[str, Path]) -> None:
@@ -103,7 +91,6 @@ def test_init_interactive_menu_picks_discovered_model(
     assert "Available local Ollama models" in result.output
     config = load_config()
     assert config.agent.model == "digitsflow/bonsai-8b:latest"
-    assert config.ai_guard.model == "digitsflow/bonsai-8b:latest"
 
 
 def test_init_interactive_falls_back_when_ollama_unreachable(

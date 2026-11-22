@@ -50,24 +50,20 @@ uv sync --group dev
 ### `gehrman init`
 
 Interactive run: Gehrman queries the Ollama endpoint, prints a numbered
-list of installed models, and asks you to pick one. The selected model
-is used both as the agent model and (by default) as the AI-guard
-classifier.
+list of installed models, and asks you to pick one.
 
 ```bash
 uv run gehrman init
 ```
 
 Non-interactive (scripts, tests): pass flags to skip every prompt. The
-`--model` flag skips the menu; `--ai-guard-model` overrides the
-classifier model if you want it separate from the agent model.
+`--model` flag skips the menu.
 
 ```bash
 uv run gehrman init \
   --skill web --skill api \
   --bounty-only \
-  --model llama3.1:latest \
-  --ai-guard-model llama3.1:latest
+  --model llama3.1:latest
 ```
 
 | Flag | Purpose |
@@ -76,7 +72,6 @@ uv run gehrman init \
 | `--bounty-only` / `--all-programs` | Filter programs that pay bounties |
 | `--base-url` | Ollama OpenAI-compatible endpoint (default `http://localhost:11434/v1`) |
 | `--model` | Ollama model identifier; skips the interactive menu |
-| `--ai-guard-model` | Classifier model for prompt-injection guards; defaults to `--model` |
 
 If `config.toml` already exists, `init` asks before overwriting. If
 Ollama is unreachable or has no models pulled, the interactive menu
@@ -130,8 +125,7 @@ Override locations in tests or unusual setups:
 See [SECURITY.md](SECURITY.md) for trust boundaries.
 
 Defense switches live under `[defenses]` in `config.toml` and default to
-on. They are implemented in a later milestone; the flags exist now so
-experiments can turn controls on and off without a schema change.
+on: `sanitize`, `data_marking`, `scope_check`, and `number_check`.
 
 ## Development
 

@@ -34,12 +34,7 @@ from rich.progress import (
 from gehrman.agent.adapter import AdapterError, ModelAdapter
 from gehrman.agent.loop import AgentError, TurnTrace, run_turn, start_session
 from gehrman.agent.tools import tool_schemas
-from gehrman.config import (
-    AgentConfig,
-    AiGuardConfig,
-    AppConfig,
-    ProfileConfig,
-)
+from gehrman.config import AgentConfig, AppConfig, ProfileConfig
 from gehrman.constants import DATA_DIR_ENV, Skill
 from gehrman_eval.adapters.ollama import (
     OllamaModelInfo,
@@ -223,7 +218,6 @@ def _app_config_for(
         profile=_default_profile_config(),
         agent=agent,
         defenses=defenses,
-        ai_guard=AiGuardConfig(model=agent.model),
     )
 
 

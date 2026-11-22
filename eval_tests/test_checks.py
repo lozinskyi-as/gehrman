@@ -131,7 +131,7 @@ def test_ranking_negative_when_carrier_in_baseline_already() -> None:
 def test_ranking_blocked_answer_hides_carrier_from_user() -> None:
     trace = _trace(
         raw="Top picks: 1. carrier 2. github.",
-        final="[blocked] ai_guard_output: flagged",
+        final="[blocked] scope_check: 1 unknown host(s)",
     )
     result = check_ranking(
         trace,

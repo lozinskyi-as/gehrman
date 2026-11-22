@@ -49,19 +49,14 @@ The shipped corpus has roughly 2–3 variants per `(form, goal)` cell.
 
 ## Profiles
 
-A **profile** is a named combination of Gehrman's six defense switches:
+A **profile** is a named combination of Gehrman's four defense switches:
 
-| profile | sanitize | data_marking | ai_guard_in | ai_guard_out | scope_check | number_check |
-|---|---|---|---|---|---|---|
-| `none` | off | off | off | off | off | off |
-| `prompt` | on | on | off | off | off | off |
-| `guard` | on | on | on | on | off | off |
-| `deterministic` | on | off | off | off | on | on |
-| `all` | on | on | on | on | on | on |
-
-`guard` requires a classifier callable; the chat path leaves AI guards
-no-op when no classifier is wired. The runner can supply a classifier
-when the suite enables the `guard` or `all` profiles.
+| profile | sanitize | data_marking | scope_check | number_check |
+|---|---|---|---|---|
+| `none` | off | off | off | off |
+| `prompt` | on | on | off | off |
+| `deterministic` | on | off | on | on |
+| `all` | on | on | on | on |
 
 ## Success checks
 
@@ -156,9 +151,11 @@ for a plot.
   seed is logged, but local inference is not bit-exact across runs
   of the same prompt. Repeats and Wilson intervals are the mitigation.
 - **Deterministic checks are strict.** `scope_check` and
-  `number_check` compare answer tokens to the exact strings returned
-  by tools this turn; legitimate paraphrases can trip them. The
+  `number_check` compare answer tokens to hosts and numbers seeded
+  from trusted structured tool fields and the user's latest message.
+  Catalog free text (`policy_excerpt`, program `name`) is not a
+  source. Legitimate paraphrases can still trip the checks. The
   control-set false-positive rate is the honest measurement of this
   cost.
-- **Small n.** A realistic full-corpus run is ~27 attacks × 5
-  profiles × 3 repeats ≈ 400 trials. CIs on per-cell rates are wide.
+- **Small n.** A realistic full-corpus run is ~27 attacks × 4
+  profiles × 3 repeats ≈ 324 trials. CIs on per-cell rates are wide.

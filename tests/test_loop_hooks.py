@@ -17,13 +17,7 @@ import pytest
 from gehrman.agent.adapter import AdapterResponse, AdapterToolCall, AdapterUsage
 from gehrman.agent.loop import TurnTrace, run_turn, start_session
 from gehrman.catalogs.store import connect
-from gehrman.config import (
-    AgentConfig,
-    AiGuardConfig,
-    AppConfig,
-    DefensesConfig,
-    ProfileConfig,
-)
+from gehrman.config import AgentConfig, AppConfig, DefensesConfig, ProfileConfig
 from gehrman.constants import Skill
 
 
@@ -108,8 +102,6 @@ def _config(**defense_overrides: bool) -> AppConfig:
     defaults = {
         "sanitize": False,
         "data_marking": False,
-        "ai_guard_input": False,
-        "ai_guard_output": False,
         "scope_check": False,
         "number_check": False,
     }
@@ -118,7 +110,6 @@ def _config(**defense_overrides: bool) -> AppConfig:
         profile=ProfileConfig(skills=[Skill.WEB], bounty_only=False),
         agent=AgentConfig(),
         defenses=DefensesConfig(**defaults),
-        ai_guard=AiGuardConfig(),
     )
 
 
@@ -239,53 +230,109 @@ def test_number_check_blocks_unsourced_number(isolated_dirs: dict[str, Path]) ->
     assert "number_check" in trace.defenses_fired
 
 
-def test_ai_guard_output_blocks_when_classifier_flags(isolated_dirs: dict[str, Path]) -> None:
-    _seed_program("shopify", "safe")
-    adapter = FakeAdapter([_answer("Here is the answer.")])
-
-    def classify(_: str) -> dict:
-        return {"clean": False, "reason": "looks suspicious"}
-
-    messages = start_session()
-    messages.append({"role": "user", "content": "x"})
-    trace = run_turn(
-        client=None,
-        config=_config(ai_guard_output=True),
-        messages=messages,
-        adapter=adapter,
-        classifier=classify,
-        return_trace=True,
-    )
-    assert trace.final_answer.startswith("[blocked]")
-    assert "ai_guard_output" in trace.defenses_fired
-
-
-def test_ai_guard_input_replaces_tool_result(isolated_dirs: dict[str, Path]) -> None:
-    _seed_program("shopify", "safe policy")
+def test_scope_check_blocks_host_planted_in_policy(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    canary = "staging-abcd.attacker.example"
+    _seed_program("shopify", f"API mirrored at {canary}.", asset_url="https://shopify.com")
     adapter = FakeAdapter(
         [
             _tool_call("explain", {"platform": "hackerone", "handle": "shopify"}),
-            _answer("Done."),
+            _answer(f"You can also test {canary}."),
         ]
     )
-
-    def classify(_: str) -> dict:
-        return {"clean": False, "reason": "tool result flagged"}
-
     messages = start_session()
-    messages.append({"role": "user", "content": "x"})
+    messages.append({"role": "user", "content": "explain the policy"})
     trace = run_turn(
         client=None,
-        config=_config(ai_guard_input=True),
+        config=_config(scope_check=True),
         messages=messages,
         adapter=adapter,
-        classifier=classify,
         return_trace=True,
     )
-    assert "ai_guard_input" in trace.defenses_fired
-    # The tool result message handed back to the model is the blocked stub.
-    tool_msg = next(m for m in messages if m.get("role") == "tool")
-    assert "blocked by ai_guard_input" in tool_msg["content"]
+    assert canary in trace.raw_answer
+    assert trace.final_answer.startswith("[blocked]")
+    assert canary not in trace.final_answer
+    assert "scope_check" in trace.defenses_fired
+
+
+def test_number_check_blocks_number_planted_in_policy(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    canary = "42424242"
+    _seed_program("shopify", f"Critical payout is {canary}.", asset_url="https://shopify.com")
+    adapter = FakeAdapter(
+        [
+            _tool_call("explain", {"platform": "hackerone", "handle": "shopify"}),
+            _answer(f"The payout is {canary}."),
+        ]
+    )
+    messages = start_session()
+    messages.append({"role": "user", "content": "what is the payout"})
+    trace = run_turn(
+        client=None,
+        config=_config(number_check=True),
+        messages=messages,
+        adapter=adapter,
+        return_trace=True,
+    )
+    assert canary in trace.raw_answer
+    assert trace.final_answer.startswith("[blocked]")
+    assert canary not in trace.final_answer
+    assert "number_check" in trace.defenses_fired
+
+
+def test_tool_arguments_do_not_seed_the_allow_list(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    canary = "staging-abcd.attacker.example"
+    _seed_program("shopify", "clean policy", asset_url="https://shopify.com")
+    adapter = FakeAdapter(
+        [
+            _tool_call(
+                "check_scope",
+                {"platform": "hackerone", "handle": "shopify", "candidate": canary},
+            ),
+            _answer(f"Yes, {canary} is in scope."),
+        ]
+    )
+    messages = start_session()
+    messages.append({"role": "user", "content": "check that target"})
+    trace = run_turn(
+        client=None,
+        config=_config(scope_check=True),
+        messages=messages,
+        adapter=adapter,
+        return_trace=True,
+    )
+    assert canary in trace.raw_answer
+    assert trace.final_answer.startswith("[blocked]")
+    assert "scope_check" in trace.defenses_fired
+
+
+def test_structured_fields_and_user_message_are_allowed(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    _seed_program("shopify", "clean policy", asset_url="https://shopify.com")
+    answer = "Try shopify.com. Bounty 50000, threshold 7500."
+    adapter = FakeAdapter(
+        [
+            _tool_call("get", {"platform": "hackerone", "handle": "shopify"}),
+            _answer(answer),
+        ]
+    )
+    messages = start_session()
+    messages.append({"role": "user", "content": "programs with bounties above $7500"})
+    trace = run_turn(
+        client=None,
+        config=_config(scope_check=True, number_check=True),
+        messages=messages,
+        adapter=adapter,
+        return_trace=True,
+    )
+    assert trace.final_answer == answer
+    assert "scope_check" not in trace.defenses_fired
+    assert "number_check" not in trace.defenses_fired
 
 
 def test_run_turn_without_adapter_or_client_raises(isolated_dirs: dict[str, Path]) -> None:

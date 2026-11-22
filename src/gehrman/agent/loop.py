@@ -12,10 +12,10 @@ Each turn:
 2. If it requests tools, dispatch them, record what fired on the input
    side, and feed the results back. Repeat up to `max_tool_steps`.
 3. When the model stops calling tools, treat the text as the final
-   answer and run the output-side defenses (`ai_guard_output`,
-   `scope_check`, `number_check`). If any fail, the user-visible
-   answer is replaced with a short, redacted stub — the attack
-   canary must never survive a failed check.
+   answer and run the output-side defenses (`scope_check`,
+   `number_check`). If any fail, the user-visible answer is replaced
+   with a short, redacted stub — the attack canary must never survive
+   a failed check.
 
 Callers can ask for a `TurnTrace` to inspect the raw answer, the
 delivered answer, which defenses fired, and tool-call history. The
@@ -38,9 +38,7 @@ from gehrman.agent.adapter import (
     OpenAICompatAdapter,
 )
 from gehrman.agent.defenses import (
-    Classifier,
-    ai_guard_input,
-    ai_guard_output,
+    collect_allowed_from_latest_user_message,
     collect_allowed_from_result,
     number_check,
     scope_check,
@@ -100,7 +98,6 @@ def run_turn(
     on_event: EventCallback | None = None,
     *,
     adapter: ModelAdapter | None = None,
-    classifier: Classifier | None = None,
     return_trace: bool = False,
 ) -> str | TurnTrace:
     """Run one user turn.
@@ -109,9 +106,7 @@ def run_turn(
     `return_trace=True` to get a `TurnTrace` instead; callers that
     only care about display (the chat REPL) keep the simple return.
 
-    `adapter` overrides the default OpenAI/Ollama adapter. `classifier`
-    is a callable that implements the AI-guard verdict; when omitted the
-    AI guards no-op (and record so in the trace).
+    `adapter` overrides the default OpenAI/Ollama adapter.
     """
     if adapter is None:
         if client is None:
@@ -122,6 +117,8 @@ def run_turn(
     trace = TurnTrace(raw_answer="", final_answer="")
     allowed_hosts: set[str] = set()
     allowed_numbers: set[str] = set()
+    # The user is trusted. Tool arguments are not: the model writes them.
+    collect_allowed_from_latest_user_message(messages, allowed_hosts, allowed_numbers)
 
     for _ in range(config.agent.max_tool_steps):
         try:
@@ -154,7 +151,6 @@ def run_turn(
             trace.final_answer = _apply_output_defenses(
                 trace.raw_answer,
                 config=config,
-                classifier=classifier,
                 allowed_hosts=allowed_hosts,
                 allowed_numbers=allowed_numbers,
                 defenses_fired=trace.defenses_fired,
@@ -175,15 +171,6 @@ def run_turn(
                 call_trace.fired_defenses.extend(fired)
                 trace.defenses_fired.extend(fired)
                 collect_allowed_from_result(result, allowed_hosts, allowed_numbers)
-                ok, evidence = ai_guard_input(
-                    json.dumps(result),
-                    enabled=config.defenses.ai_guard_input,
-                    classify=classifier,
-                )
-                if config.defenses.ai_guard_input and not ok:
-                    trace.defenses_fired.append("ai_guard_input")
-                    call_trace.fired_defenses.append("ai_guard_input")
-                    result = {"error": f"blocked by ai_guard_input: {evidence}"}
                 content = json.dumps(result)
                 if on_event is not None:
                     on_event("tool_result", {"name": call.name, "result": result})
@@ -205,7 +192,6 @@ def _apply_output_defenses(
     raw: str,
     *,
     config: AppConfig,
-    classifier: Classifier | None,
     allowed_hosts: set[str],
     allowed_numbers: set[str],
     defenses_fired: list[str],
@@ -217,13 +203,6 @@ def _apply_output_defenses(
     names each failing defense so the trace is self-explanatory.
     """
     reasons: list[str] = []
-
-    ok, evidence = ai_guard_output(
-        raw, enabled=config.defenses.ai_guard_output, classify=classifier
-    )
-    if config.defenses.ai_guard_output and not ok:
-        defenses_fired.append("ai_guard_output")
-        reasons.append(f"ai_guard_output: {evidence}")
 
     ok, evidence = scope_check(
         raw, enabled=config.defenses.scope_check, allowed_hosts=allowed_hosts

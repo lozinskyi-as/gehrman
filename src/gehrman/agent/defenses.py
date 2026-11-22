@@ -6,17 +6,10 @@ Two kinds of defense live here:
   `data_marking`) before it reaches the model. These return
   `(transformed_text, fired)` where `fired` is True when the defense
   actually did something observable.
-- **Output-side / control-plane** checks (`ai_guard_input`,
-  `ai_guard_output`, `scope_check`, `number_check`) that decide whether
-  a chunk of text (a tool result or the model's reply) is acceptable.
-  These return `(ok, evidence)` — on `ok=False` the loop replaces the
-  affected text with a safe stub and records the evidence string.
-
-The AI guards call out to a small classifier model. The caller injects
-a `Classifier` callable so the loop builds one from `AiGuardConfig`
-while tests can substitute a fake. When no classifier is supplied, the
-guards no-op (returning `ok=True`) so the chat command keeps working
-even if the classifier backend is unavailable.
+- **Output-side** checks (`scope_check`, `number_check`) that decide
+  whether the model's reply is acceptable. These return `(ok, evidence)`.
+  On `ok=False` the loop replaces the reply with a safe stub and records
+  the evidence string. Evidence never echoes the suspicious value.
 
 Nothing here raises for malformed input: defenses log a reason and
 return rather than taking the whole turn down.
@@ -25,17 +18,8 @@ return rather than taking the whole turn down.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
-from typing import Any, TypedDict
-
-
-class ClassifierVerdict(TypedDict):
-    clean: bool
-    reason: str
-
-
-Classifier = Callable[[str], ClassifierVerdict]
-
+from collections.abc import Iterable
+from typing import Any
 
 # Loose hostname grammar. Requires at least one dot and ASCII labels
 # separated by dots. We don't try to match every RFC-valid name — this
@@ -69,36 +53,6 @@ def data_marking(text: str, *, source: str, enabled: bool) -> tuple[str, bool]:
     return f"<<DATA source={source}>>\n{text}\n<<END>>", True
 
 
-def ai_guard_input(
-    text: str, *, enabled: bool, classify: Classifier | None = None
-) -> tuple[bool, str]:
-    """Classifier-side check on untrusted text about to enter the model context.
-
-    Returns `(ok, evidence)`. If disabled, `ok=True` and no reason.
-    If enabled without a classifier wired, `ok=True` with an
-    evidence string noting the no-op — the loop records this so the
-    trace never silently misrepresents what ran.
-    """
-    if not enabled:
-        return True, ""
-    if classify is None:
-        return True, "no classifier wired"
-    try:
-        verdict = classify(text)
-    except Exception as exc:  # noqa: BLE001
-        # A failing classifier must not take the turn down; treat as clean
-        # and record the failure so the trace shows it.
-        return True, f"classifier error: {exc}"
-    return bool(verdict.get("clean", True)), str(verdict.get("reason", ""))
-
-
-def ai_guard_output(
-    text: str, *, enabled: bool, classify: Classifier | None = None
-) -> tuple[bool, str]:
-    """Classifier-side check on the model's reply before display."""
-    return ai_guard_input(text, enabled=enabled, classify=classify)
-
-
 def _extract_hosts(text: str) -> set[str]:
     return {m.group(0).lower().rstrip(".") for m in _HOST_RE.finditer(text.lower())}
 
@@ -112,10 +66,9 @@ def scope_check(
 ) -> tuple[bool, str]:
     """Every hostname in `text` must appear in `allowed_hosts`.
 
-    `allowed_hosts` is built by the loop from strings seen in tool
-    results this turn, so the agent cannot introduce a host it never
-    retrieved. Comparison is case-insensitive and trailing dots are
-    stripped.
+    `allowed_hosts` is seeded from trusted structured tool fields and
+    the user's latest message, not from catalog free text. Comparison
+    is case-insensitive and trailing dots are stripped.
     """
     if not enabled:
         return True, ""
@@ -132,7 +85,7 @@ def scope_check(
 def number_check(
     text: str, *, enabled: bool, allowed_numbers: Iterable[str]
 ) -> tuple[bool, str]:
-    """Every multi-digit number in `text` must have appeared in a tool result this turn."""
+    """Every multi-digit number in `text` must have been seeded this turn."""
     if not enabled:
         return True, ""
     allow = {n.replace(",", "") for n in allowed_numbers}
@@ -143,20 +96,97 @@ def number_check(
     return False, f"{len(unknown)} unsourced number(s)"
 
 
+# Structured tool-result keys that may seed scope_check / number_check.
+# Free-text catalog fields are absent on purpose:
+# - `policy_excerpt` is the injection carrier. `explain` returns it, and
+#   the harness writes attack payloads there.
+# - `name` is catalog text too. A program title can contain a hostname or
+#   a fake figure, so it does not contribute. That is the safe default.
+# Any new string field stays untrusted until it is added here. Booleans
+# are listed so the walker sees them and ignores them. `results` is only
+# the search container.
+TRUSTED_ALLOWLIST_KEYS = frozenset(
+    {
+        "asset_types",
+        "bounty_max",
+        "bounty_min",
+        "count",
+        "found",
+        "handle",
+        "in_scope",
+        "in_scope_count",
+        "offers_bounty",
+        "out_of_scope_count",
+        "platform",
+        "results",
+        "score",
+        "url",
+    }
+)
+
+
 def collect_allowed_from_result(
     result: Any, hosts_out: set[str], numbers_out: set[str]
 ) -> None:
-    """Walk a tool-result value and seed the allow-sets for scope/number checks."""
+    """Seed allow-sets from trusted structured fields only.
+
+    Keys outside `TRUSTED_ALLOWLIST_KEYS` are skipped, including
+    `policy_excerpt` and `name`, and including text wrapped in a
+    data-marking fence. Does not raise.
+    """
     if isinstance(result, dict):
-        for value in result.values():
-            collect_allowed_from_result(value, hosts_out, numbers_out)
+        for key, value in result.items():
+            if key not in TRUSTED_ALLOWLIST_KEYS:
+                continue
+            _collect_trusted_value(value, hosts_out, numbers_out)
     elif isinstance(result, list):
         for item in result:
             collect_allowed_from_result(item, hosts_out, numbers_out)
-    elif isinstance(result, bool):
+
+
+def _collect_trusted_value(value: Any, hosts_out: set[str], numbers_out: set[str]) -> None:
+    if isinstance(value, dict):
+        collect_allowed_from_result(value, hosts_out, numbers_out)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_trusted_value(item, hosts_out, numbers_out)
+    elif isinstance(value, bool):
         return
-    elif isinstance(result, int | float):
-        numbers_out.add(str(result))
-    elif isinstance(result, str):
-        hosts_out.update(_extract_hosts(result))
-        numbers_out.update(_extract_numbers(result))
+    elif isinstance(value, int | float):
+        _add_number(numbers_out, value)
+    elif isinstance(value, str):
+        hosts_out.update(_extract_hosts(value))
+        numbers_out.update(_extract_numbers(value))
+
+
+def _add_number(numbers_out: set[str], value: int | float) -> None:
+    """Record a structured number in the forms `number_check` extracts.
+
+    SQLite REAL values arrive as floats, so a bounty of 50000 is
+    `50000.0`. `str(50000.0)` is `50000.0`, while an answer that says
+    50000 yields `50000`. Integral floats are stored as both spellings.
+    """
+    if isinstance(value, bool):
+        return
+    if isinstance(value, float) and value.is_integer():
+        numbers_out.add(str(int(value)))
+    numbers_out.add(str(value))
+
+
+def collect_allowed_from_latest_user_message(
+    messages: Iterable[Any], hosts_out: set[str], numbers_out: set[str]
+) -> None:
+    """Seed allow-sets from the latest user message.
+
+    The user is trusted. Tool-call arguments are not read here: the
+    model writes them and can be steered into repeating a canary.
+    """
+    latest = ""
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            latest = content
+    hosts_out.update(_extract_hosts(latest))
+    numbers_out.update(_extract_numbers(latest))

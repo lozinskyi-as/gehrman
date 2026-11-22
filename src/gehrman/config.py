@@ -12,6 +12,7 @@ disable a control during the experiment.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 from typing import Self
@@ -107,18 +108,8 @@ class DefensesConfig(BaseModel):
 
     sanitize: bool = True
     data_marking: bool = True
-    ai_guard_input: bool = True
-    ai_guard_output: bool = True
     scope_check: bool = True
     number_check: bool = True
-
-
-class AiGuardConfig(BaseModel):
-    """Separate classifier model used by ai_guard_input / ai_guard_output."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    model: str = DEFAULT_OLLAMA_MODEL
 
 
 class AppConfig(BaseModel):
@@ -130,7 +121,6 @@ class AppConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     defenses: DefensesConfig = Field(default_factory=DefensesConfig)
-    ai_guard: AiGuardConfig = Field(default_factory=AiGuardConfig)
 
     @model_validator(mode="after")
     def _no_secret_fields(self) -> Self:
@@ -155,6 +145,26 @@ def _assert_no_secret_keys(payload: object, prefix: str = "") -> None:
             _assert_no_secret_keys(item, f"{prefix}[{index}]")
 
 
+# Keys written by init before the AI guard was removed. Dropped so an
+# existing config.toml still loads. Every other unknown key is rejected.
+_LEGACY_AI_GUARD_DEFENSE_KEYS = frozenset({"ai_guard_input", "ai_guard_output"})
+
+
+def _drop_legacy_ai_guard(data: dict) -> bool:
+    """Remove retired AI-guard keys. Returns True when anything was dropped."""
+    dropped = False
+    if "ai_guard" in data:
+        data.pop("ai_guard")
+        dropped = True
+    defenses = data.get("defenses")
+    if isinstance(defenses, dict):
+        for key in _LEGACY_AI_GUARD_DEFENSE_KEYS:
+            if key in defenses:
+                defenses.pop(key)
+                dropped = True
+    return dropped
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     """Read and validate config.toml. Missing file is a hard error."""
     target = path or config_path()
@@ -163,6 +173,12 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise FileNotFoundError(msg)
     with target.open("rb") as handle:
         data = tomllib.load(handle)
+    if _drop_legacy_ai_guard(data):
+        print(
+            "Warning: config.toml still contains retired AI guard settings. "
+            "Re-run `gehrman init` to rewrite it.",
+            file=sys.stderr,
+        )
     return AppConfig.model_validate(data)
 
 

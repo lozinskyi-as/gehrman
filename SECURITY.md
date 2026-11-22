@@ -13,11 +13,17 @@ This document describes trust boundaries for the thesis experiment
 | Source | Trust | Notes |
 | --- | --- | --- |
 | Structured catalog fields (handles, URLs, booleans, numeric metrics, asset types, bounty amounts) | **Conditionally trusted** | Taken from the public [arkadiyt/bounty-targets-data](https://github.com/arkadiyt/bounty-targets-data) snapshot. Validated against pydantic schemas before storage. Still treated as untrusted for *rendering* (terminal markup) and never executed. |
-| Free-text catalog fields (`instruction`, `description`) | **Untrusted** | May contain injected instructions or false facts. Must be sanitized, marked, and optionally classified before they enter the model context. They must never influence scores. |
-| Model output (chat answers, tool-argument proposals, AI-guard JSON) | **Untrusted until checked** | Subject to `scope_check` and `number_check` (deterministic) and optional `ai_guard_output`. Displayed only after escaping. |
+| Free-text catalog fields (`policy`, stored as `policy_excerpt`; also program `name`) | **Untrusted** | `policy_excerpt` is where indirect prompt injection is planted (HackerOne policy, truncated). `name` is catalog text too. Neither may seed `scope_check` or `number_check`, and neither may influence scores. |
+| Model output (chat answers, tool-argument proposals) | **Untrusted until checked** | Subject to `scope_check` and `number_check`. Displayed only after escaping. Tool-call arguments do not seed those checks: the model writes them. |
 | Researcher profile and defense switches in `config.toml` | **Trusted** | Written by `gehrman init` on the local machine. No secrets. |
 | Local Ollama endpoint (`http://localhost:11434/v1`) | **Trusted** | Loopback-only. Gehrman stores no credentials; the model runs on the user's machine. |
 | Tool implementations (search, get, explain, check_scope) | **Trusted code** | Read-only, pydantic-validated arguments, no network, no shell, no arbitrary file access. The agent opens SQLite with `mode=ro`. |
+
+## Allow-lists
+
+`scope_check` and `number_check` allow a host or a number only when it was seeded this turn. Seeding uses trusted structured tool-result fields (`url`, `handle`, numeric fields such as `bounty_min`, `bounty_max`, `score`, and counts, plus `asset_types`) and the user's latest message. The user is trusted. Tool-call arguments are not, because the model writes them and can be steered.
+
+`explain` returns `policy_excerpt`. That string is untrusted free text, and it is the field the evaluation harness writes attack payloads into. Harvesting every hostname and number out of it made a canary "allowed", so the deterministic checks passed an answer that repeated the payload. The allow-list therefore ignores `policy_excerpt`. Program `name` is catalog text as well (a title can contain a hostname or a fake figure) and does not contribute. A new free-text result key stays ignored until it is added to `TRUSTED_ALLOWLIST_KEYS`.
 
 ## What Gehrman will not do
 

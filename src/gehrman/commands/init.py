@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 
-from gehrman.config import AgentConfig, AiGuardConfig, AppConfig, ProfileConfig, save_config
+from gehrman.config import AgentConfig, AppConfig, ProfileConfig, save_config
 from gehrman.constants import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
@@ -91,13 +91,6 @@ def init_command(
             help="Ollama model identifier. Skips the interactive menu.",
         ),
     ] = None,
-    ai_guard_model: Annotated[
-        str | None,
-        typer.Option(
-            "--ai-guard-model",
-            help="Classifier model for prompt-injection guards. Defaults to --model.",
-        ),
-    ] = None,
 ) -> None:
     """Create ~/.config/gehrman/config.toml."""
     target = config_path()
@@ -123,7 +116,6 @@ def init_command(
         resolved_model = _prompt_model(resolved_base_url, DEFAULT_OLLAMA_MODEL)
     else:
         resolved_model = DEFAULT_OLLAMA_MODEL
-    resolved_ai_guard_model = ai_guard_model or resolved_model
 
     try:
         profile = ProfileConfig(
@@ -131,8 +123,7 @@ def init_command(
             bounty_only=resolved_bounty_only,
         )
         agent = AgentConfig(base_url=resolved_base_url, model=resolved_model)
-        ai_guard = AiGuardConfig(model=resolved_ai_guard_model)
-        config = AppConfig(profile=profile, agent=agent, ai_guard=ai_guard)
+        config = AppConfig(profile=profile, agent=agent)
     except ValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -144,7 +135,6 @@ def init_command(
         f"Skills     : {skills_display}\n"
         f"Bounty only: {config.profile.bounty_only}\n"
         f"Ollama     : {config.agent.base_url} ({config.agent.model})\n"
-        f"AI guard   : {config.ai_guard.model}\n"
         f"Config     : {written}"
     )
     console.print(Panel(summary, title="Gehrman is ready", border_style="green"))
