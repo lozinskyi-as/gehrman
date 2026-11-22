@@ -129,6 +129,11 @@ def test_update_writes_snapshots_and_rows(
         acme_assets = json.loads(acme[2])
         assert acme_assets == [{"identifier": "acme.com", "type": "web", "bounty_eligible": True}]
         assert "instruction" not in acme[2]
+        components = conn.execute(
+            "SELECT score_components FROM programs WHERE platform = 'hackerone'"
+        ).fetchone()
+        assert json.loads(components[0])["skill_fit"] == 1.0
+        assert "policy" not in components[0]
 
         gamma = conn.execute(
             "SELECT in_scope_assets FROM programs WHERE platform = 'intigriti'"

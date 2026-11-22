@@ -40,7 +40,7 @@ from gehrman.catalogs.store import (
 )
 from gehrman.config import load_config
 from gehrman.constants import CATALOG_URLS, Platform
-from gehrman.scoring import score_program
+from gehrman.scoring import ScoreResult, score_programs
 
 console = Console()
 
@@ -51,9 +51,7 @@ NORMALIZERS = {
 }
 
 
-def _process_platform(
-    plat: Platform, body: bytes, truncate: int, profile
-) -> tuple[list[tuple[Program, float]], int]:
+def _parse_platform(plat: Platform, body: bytes, truncate: int) -> tuple[list[Program], int]:
     try:
         raw = json.loads(body)
     except json.JSONDecodeError as exc:
@@ -62,7 +60,7 @@ def _process_platform(
         raise typer.BadParameter(f"{plat.value}: expected a JSON array")
 
     model_cls, normalizer = NORMALIZERS[plat]
-    scored: list[tuple[Program, float]] = []
+    programs: list[Program] = []
     skipped = 0
     for entry in raw:
         try:
@@ -70,9 +68,8 @@ def _process_platform(
         except ValidationError:
             skipped += 1
             continue
-        program = normalizer(validated, truncate)
-        scored.append((program, score_program(program, profile)))
-    return scored, skipped
+        programs.append(normalizer(validated, truncate))
+    return programs, skipped
 
 
 def _schema_is_stale() -> bool:
@@ -125,7 +122,7 @@ def update_command(
                 "Run `gehrman update` with no --platform to restore the others.[/yellow]"
             )
 
-    rows: list[tuple[str, int, int, int]] = []
+    fetched: list[tuple[Platform, bytes, list[Program], int]] = []
     for plat in selected:
         url = CATALOG_URLS[plat]
         console.print(f"Fetching {plat.value} …")
@@ -135,19 +132,39 @@ def update_command(
             console.print(f"[red]{plat.value}: {exc}[/red]")
             raise typer.Exit(code=1) from exc
 
-        scored, skipped = _process_platform(plat, body, truncate, config.profile)
+        programs, skipped = _parse_platform(plat, body, truncate)
         if skipped:
             console.print(
                 f"[yellow]{plat.value}: skipped {skipped} entries that failed validation[/yellow]"
             )
+        fetched.append((plat, body, programs, skipped))
 
+    # Breadth is a percentile across every program fetched in this run.
+    # A partial --platform update therefore ranks inside that subset.
+    all_programs = [program for _, _, programs, _ in fetched for program in programs]
+    scored_all = score_programs(all_programs, config.profile)
+    by_key: dict[tuple[Platform, str], ScoreResult] = {
+        (program.platform, program.handle): result
+        for program, result in zip(all_programs, scored_all, strict=True)
+    }
+
+    rows: list[tuple[str, int, int, int]] = []
+    for plat, body, programs, skipped in fetched:
+        scored = [
+            (
+                program,
+                by_key[(program.platform, program.handle)].score,
+                by_key[(program.platform, program.handle)].components,
+            )
+            for program in programs
+        ]
         if not dry_run:
             snapshot_path, sha = write_snapshot(plat, body, fetched_at)
             with connect() as conn:
                 replace_platform_programs(conn, plat, scored, fetched_at, snapshot_path, sha)
 
-        nonzero = sum(1 for _, s in scored if s > 0)
-        rows.append((plat.value, len(scored), skipped, nonzero))
+        nonzero = sum(1 for _, score, _ in scored if score > 0)
+        rows.append((plat.value, len(programs), skipped, nonzero))
 
     table = Table(title="Gehrman update summary")
     table.add_column("Platform")
