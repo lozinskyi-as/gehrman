@@ -138,8 +138,16 @@ def test_update_writes_snapshots_and_rows(
         assert h1_extras["response_efficiency_p"] == 100
         assert h1_extras["first_response_p"] == 100
         assert h1_extras["bounty_eligible_share"] == 1
+        assert h1_extras["new_assets_30d"] == 0
+        assert h1_extras["new_program"] is False
+        assert json.loads(components[0])["freshness"] == 0.0
         assert "6.0" not in components[1]
         assert "90" not in components[1]
+        history = conn.execute(
+            "SELECT identifier, baseline FROM asset_history "
+            "WHERE platform = 'hackerone' AND in_scope = 1"
+        ).fetchone()
+        assert history == ("acme.com", 1)
 
         beta = conn.execute("SELECT extras FROM programs WHERE platform = 'bugcrowd'").fetchone()
         assert json.loads(beta[0])["max_payout"] == 5000
@@ -156,6 +164,27 @@ def test_update_writes_snapshots_and_rows(
         files = list((snapshot_dir() / plat.value).glob("*.json"))
         assert len(files) == 1
         assert files[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_dry_run_does_not_change_asset_history(
+    isolated_dirs: dict[str, Path], fake_fetch: dict[str, bytes]
+) -> None:
+    _write_config()
+    assert runner.invoke(app, ["update"]).exit_code == 0
+    with sqlite3.connect(db_path()) as conn:
+        before = conn.execute(
+            "SELECT platform, handle, identifier, in_scope, first_seen_at, last_seen_at, baseline "
+            "FROM asset_history ORDER BY platform, handle, identifier, in_scope"
+        ).fetchall()
+    assert before
+    result = runner.invoke(app, ["update", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    with sqlite3.connect(db_path()) as conn:
+        after = conn.execute(
+            "SELECT platform, handle, identifier, in_scope, first_seen_at, last_seen_at, baseline "
+            "FROM asset_history ORDER BY platform, handle, identifier, in_scope"
+        ).fetchall()
+    assert after == before
 
 
 def test_update_dry_run_writes_nothing(

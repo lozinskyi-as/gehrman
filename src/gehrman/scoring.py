@@ -288,17 +288,23 @@ def combine_score(components: Mapping[str, float]) -> float:
     return round(100.0 * total / total_weight, SCORING_PARAMS.score_decimals)
 
 
+def freshness_component(new_assets_30d: int) -> float:
+    """Saturates at 1 once `new_assets_30d` reaches the reference count."""
+    reference = SCORING_PARAMS.freshness_reference_assets
+    return min(1.0, math.log1p(new_assets_30d) / math.log1p(reference))
+
+
 def score_programs(
     programs: list[Program],
     profile: ProfileConfig,
     *,
-    freshness: Mapping[tuple[str, str], float] | None = None,
+    freshness: Mapping[tuple[str, str], tuple[int, bool]] | None = None,
 ) -> list[ScoreResult]:
     """Score `programs` against one shared breadth population.
 
-    `freshness` maps `(platform, handle)` to a component in [0, 1].
-    Passing None leaves freshness out of the mean. Passing a mapping
-    makes freshness available for every program; a missing key is 0.
+    `freshness` maps `(platform, handle)` to `(new_assets_30d, is_new_program)`.
+    Passing None leaves the component out of the mean. Passing a mapping
+    makes it available for every program; a missing key is `(0, False)`.
     """
     scope_logs = [math.log1p(program.in_scope_count) for program in programs]
     results: list[ScoreResult] = []
@@ -308,18 +314,17 @@ def score_programs(
             "breadth": breadth_component(program, scope_logs),
             "pays": 1.0 if program.offers_bounty else 0.0,
         }
+        extras = platform_extras(program, programs)
         if freshness is not None:
-            raw["freshness"] = freshness.get((program.platform.value, program.handle), 0.0)
+            key = (program.platform.value, program.handle)
+            new_assets, is_new = freshness.get(key, (0, False))
+            raw["freshness"] = freshness_component(new_assets)
+            extras["new_assets_30d"] = new_assets
+            extras["new_program"] = is_new
         components = {name: _round_unit(value) for name, value in raw.items()}
         if profile.bounty_only and not program.offers_bounty:
             score = 0.0
         else:
             score = combine_score(components)
-        results.append(
-            ScoreResult(
-                score=score,
-                components=components,
-                extras=platform_extras(program, programs),
-            )
-        )
+        results.append(ScoreResult(score=score, components=components, extras=extras))
     return results

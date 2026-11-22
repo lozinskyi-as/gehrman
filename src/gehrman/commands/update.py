@@ -35,12 +35,14 @@ from gehrman.catalogs.store import (
     SCHEMA_VERSION,
     connect,
     db_path,
+    preview_freshness,
+    record_asset_history,
     replace_platform_programs,
     write_snapshot,
 )
 from gehrman.config import load_config
 from gehrman.constants import CATALOG_URLS, Platform
-from gehrman.scoring import ScoreResult, score_programs
+from gehrman.scoring import SCORING_PARAMS, score_programs
 
 console = Console()
 
@@ -142,21 +144,41 @@ def update_command(
     # Breadth is a percentile across every program fetched in this run.
     # A partial --platform update therefore ranks inside that subset.
     all_programs = [program for _, _, programs, _ in fetched for program in programs]
-    scored_all = score_programs(all_programs, config.profile)
-    by_key: dict[tuple[Platform, str], ScoreResult] = {
-        (program.platform, program.handle): result
-        for program, result in zip(all_programs, scored_all, strict=True)
-    }
-
+    window_days = SCORING_PARAMS.freshness_window_days
     rows: list[tuple[str, int, int, int]] = []
-    for plat, body, programs, skipped in fetched:
-        scored = [(program, by_key[(program.platform, program.handle)]) for program in programs]
-        if not dry_run:
-            snapshot_path, sha = write_snapshot(plat, body, fetched_at)
-            with connect() as conn:
-                replace_platform_programs(conn, plat, scored, fetched_at, snapshot_path, sha)
+    if dry_run:
+        freshness = preview_freshness(all_programs, fetched_at, window_days=window_days)
+        scored_all = score_programs(all_programs, config.profile, freshness=freshness)
+        by_key = {
+            (program.platform, program.handle): result
+            for program, result in zip(all_programs, scored_all, strict=True)
+        }
+    else:
+        snapshots = {plat: write_snapshot(plat, body, fetched_at) for plat, body, _, _ in fetched}
+        with connect() as conn:
+            freshness = record_asset_history(
+                conn, all_programs, fetched_at, window_days=window_days
+            )
+            scored_all = score_programs(all_programs, config.profile, freshness=freshness)
+            by_key = {
+                (program.platform, program.handle): result
+                for program, result in zip(all_programs, scored_all, strict=True)
+            }
+            for plat, _, programs, _ in fetched:
+                snapshot_path, sha = snapshots[plat]
+                replace_platform_programs(
+                    conn,
+                    plat,
+                    [(program, by_key[(program.platform, program.handle)]) for program in programs],
+                    fetched_at,
+                    snapshot_path,
+                    sha,
+                )
 
-        nonzero = sum(1 for _, result in scored if result.score > 0)
+    for plat, _, programs, skipped in fetched:
+        nonzero = sum(
+            1 for program in programs if by_key[(program.platform, program.handle)].score > 0
+        )
         rows.append((plat.value, len(programs), skipped, nonzero))
 
     table = Table(title="Gehrman update summary")
