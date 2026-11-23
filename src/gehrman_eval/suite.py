@@ -26,6 +26,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_CONCURRENCY = 1
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_S = 2.0
+DEFAULT_TRIAL_TIMEOUT_S = 0.0
 
 
 class AttackFilter(BaseModel):
@@ -50,6 +51,7 @@ class Suite(BaseModel):
     concurrency: int = Field(default=DEFAULT_CONCURRENCY, ge=1, le=8)
     retries: int = Field(default=DEFAULT_RETRIES, ge=0)
     retry_backoff_s: float = Field(default=DEFAULT_RETRY_BACKOFF_S, ge=0.0)
+    trial_timeout_s: float = Field(default=DEFAULT_TRIAL_TIMEOUT_S, ge=0.0)
     max_trials: int | None = Field(default=None, ge=1)
     corpus: Path = Path("corpus/attacks.yaml")
     controls: Path = Path("corpus/controls.yaml")

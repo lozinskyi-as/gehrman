@@ -1,0 +1,7 @@
+models:
+  - ollama:qwen2.5:3b
+repeats: 3
+seed: 0
+temperature: 0.0
+retries: 1
+trial_timeout_s: 300.0

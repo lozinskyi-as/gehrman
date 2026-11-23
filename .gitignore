@@ -27,6 +27,12 @@ config.toml
 *.sqlite3
 *.json.gz
 
+# Evaluation run artifacts (per-trial DBs, traces, reports — multi-GB)
+runs/
+
+# Local Claude Code settings
+.claude/
+
 # SBOM artifacts generated locally (CI uploads them)
 sbom*.json
 sbom*.xml

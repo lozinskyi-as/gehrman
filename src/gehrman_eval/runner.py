@@ -12,6 +12,7 @@ scoring, injection) lives in the other modules. Keep it that way.
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import os
 import time
 from contextlib import contextmanager
@@ -235,8 +236,15 @@ def _execute_turn(
     *,
     retries: int,
     retry_backoff_s: float,
+    trial_timeout_s: float = 0.0,
 ) -> _TrialOutcome:
-    """Run one turn with retries. Does NOT raise on failure; returns an outcome."""
+    """Run one turn with retries. Does NOT raise on failure; returns an outcome.
+
+    If `trial_timeout_s > 0`, each attempt is wall-clocked in a worker
+    thread and aborted on timeout. The worker is left to drain in the
+    background — httpx is sync and can't be force-cancelled without
+    corrupting the connection pool, but subsequent trials proceed.
+    """
     messages = start_session()
     messages.append({"role": "user", "content": user_query})
     attempts = 0
@@ -245,13 +253,33 @@ def _execute_turn(
     while attempts <= retries:
         attempts += 1
         try:
-            trace = run_turn(
-                client=None,
-                config=config,
-                messages=messages,
-                adapter=adapter,
-                return_trace=True,
-            )
+            if trial_timeout_s > 0:
+                ex = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="trial")
+                try:
+                    fut = ex.submit(
+                        run_turn,
+                        client=None,
+                        config=config,
+                        messages=messages,
+                        adapter=adapter,
+                        return_trace=True,
+                    )
+                    try:
+                        trace = fut.result(timeout=trial_timeout_s)
+                    except _cf.TimeoutError as exc:
+                        raise AgentError(
+                            f"trial exceeded trial_timeout_s={trial_timeout_s:.0f}s"
+                        ) from exc
+                finally:
+                    ex.shutdown(wait=False)
+            else:
+                trace = run_turn(
+                    client=None,
+                    config=config,
+                    messages=messages,
+                    adapter=adapter,
+                    return_trace=True,
+                )
             assert isinstance(trace, TurnTrace)
             return _TrialOutcome(trace=trace, latency_s=time.monotonic() - started)
         except (AdapterError, AgentError, ValidationError) as exc:
@@ -274,6 +302,7 @@ def _compute_baseline(
     db_handles: list[str],
     retries: int,
     retry_backoff_s: float,
+    trial_timeout_s: float = 0.0,
 ) -> list[str]:
     outcome = _execute_turn(
         adapter,
@@ -281,6 +310,7 @@ def _compute_baseline(
         user_query,
         retries=retries,
         retry_backoff_s=retry_backoff_s,
+        trial_timeout_s=trial_timeout_s,
     )
     if outcome.trace is None:
         return []
@@ -501,6 +531,7 @@ class Runner:
                 pc.control.user_query,
                 retries=self.suite.retries,
                 retry_backoff_s=self.suite.retry_backoff_s,
+                trial_timeout_s=self.suite.trial_timeout_s,
             )
         finished = datetime.now(UTC)
         trace = outcome.trace
@@ -574,6 +605,7 @@ class Runner:
                 case.user_query,
                 retries=self.suite.retries,
                 retry_backoff_s=self.suite.retry_backoff_s,
+                trial_timeout_s=self.suite.trial_timeout_s,
             )
         finished = datetime.now(UTC)
 
@@ -691,6 +723,7 @@ class Runner:
                     db_handles=handles,
                     retries=self.suite.retries,
                     retry_backoff_s=self.suite.retry_backoff_s,
+                    trial_timeout_s=self.suite.trial_timeout_s,
                 )
                 baselines[key] = top3
                 write_baselines(self.run_dir, baselines)
