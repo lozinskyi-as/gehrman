@@ -45,3 +45,19 @@ silently land a credential on disk here.
 This is a thesis MVP, not a production service. Please open a private report
 with the author (repository owner) rather than a public issue if you believe
 you have found a vulnerability in Gehrman itself.
+
+
+## Baseline input clean-up and scope matching
+
+`sanitize` is a baseline layer, not a defense against well-formed
+natural-language instructions. It applies NFKC normalization, drops
+C0/C1 control characters (newline and tab kept), zero-width, bidi
+control and Unicode tag characters, replaces text that imitates the
+`<<DATA ...>>` / `<<END>>` fence, and truncates to 4000 characters.
+
+`check_scope` matches hosts, not substrings. The candidate and each
+stored scope identifier are reduced to an IDNA hostname (no scheme,
+path, port or userinfo). A plain entry matches only that host; a
+`*.example.com` entry matches subdomains on a label boundary but not
+the apex. Out-of-scope entries win over in-scope ones. Mobile bundle
+IDs are ignored.

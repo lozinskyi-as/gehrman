@@ -2,7 +2,8 @@
 
 Statistics are kept deliberately simple: Wilson 95% confidence intervals
 on binomial proportions (attack success rate, false-positive rate) and
-counts. No scipy, no bootstrapping — the point is that every number is
+counts, plus an exact McNemar test for paired profile comparisons (see
+`stats.py`). No scipy, no bootstrapping — the point is that every number is
 reproducible by eye from `results.jsonl`.
 
 The report distinguishes two rates per (model × profile):
@@ -27,6 +28,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from gehrman_eval.corpus import goal_group
 
 _Z_95 = 1.959963984540054  # two-sided 95% normal quantile
 
@@ -193,6 +196,8 @@ def summarize_attacks(
         buckets = _bucket(records, lambda r: (r.model, r.profile, "form", r.form))
     elif slice_by == "goal":
         buckets = _bucket(records, lambda r: (r.model, r.profile, "goal", r.goal))
+    elif slice_by == "group":
+        buckets = _bucket(records, lambda r: (r.model, r.profile, "group", goal_group(r.goal)))
     else:
         raise ValueError(f"Unknown slice_by: {slice_by!r}")
     out: list[CellStats] = []
@@ -318,14 +323,31 @@ def render_markdown(data: RunData) -> str:
     )
     if failures:
         buf.write(f"- **Failed trials**: {failures}\n")
+    from gehrman_eval.stats import collapse_repeats
+
+    attacks = collapse_repeats(data.attacks)
+    buf.write(
+        "\nUnit of analysis: one attack per model × profile. Repeats are "
+        "collapsed by majority vote (ties count for the attacker); failed "
+        "trials are excluded from n.\n"
+    )
     buf.write("\n## Attack success rate per model × profile\n\n")
-    buf.write(_table_attacks(summarize_attacks(data.attacks)))
+    buf.write(_table_attacks(summarize_attacks(attacks)))
+
+    buf.write("\n## By attack group (by construction vs adaptive)\n\n")
+    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="group")))
 
     buf.write("\n## By attack form\n\n")
-    buf.write(_table_attacks(summarize_attacks(data.attacks, slice_by="form")))
+    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="form")))
 
     buf.write("\n## By attack goal\n\n")
-    buf.write(_table_attacks(summarize_attacks(data.attacks, slice_by="goal")))
+    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="goal")))
+
+    buf.write("\n## Paired comparisons (exact McNemar, user_exposed)\n\n")
+    buf.write(_table_paired(attacks))
+
+    buf.write("\n## Stability across repeats\n\n")
+    buf.write(_table_stability(data.attacks))
 
     buf.write("\n## False-positive rate on clean controls\n\n")
     buf.write(_table_controls(summarize_controls(data.controls)))
@@ -360,6 +382,50 @@ def _table_attacks(cells: list[CellStats]) -> str:
             f"{gap:+.2%}",
         ]
         buf.write("| " + " | ".join(row) + " |\n")
+    return buf.getvalue()
+
+
+def _table_paired(attacks: list[AttackRecord]) -> str:
+    from gehrman_eval.stats import paired_comparisons
+
+    rows = []
+    for group in ("all", "by_construction", "adaptive"):
+        rows.extend(paired_comparisons(attacks, metric="user_exposed", group=group))
+    rows = [r for r in rows if r.n_pairs > 0]
+    if not rows:
+        return "_Not enough paired data._\n"
+    buf = io.StringIO()
+    buf.write("| group | A | B | n | only A | only B | both | p (exact) |\n")
+    buf.write("|---|---|---|---|---|---|---|---|\n")
+    for r in rows:
+        buf.write(
+            f"| {r.group} | {r.model_a} / {r.profile_a} | {r.model_b} / {r.profile_b} | "
+            f"{r.n_pairs} | {r.only_a} | {r.only_b} | {r.both} | {r.p_value:.4f} |\n"
+        )
+    buf.write(
+        "\nOnly discordant pairs (only A, only B) carry information. With "
+        "fewer than 6 discordant pairs no difference can reach p < 0.05.\n"
+    )
+    return buf.getvalue()
+
+
+def _table_stability(records: list[AttackRecord]) -> str:
+    from gehrman_eval.stats import repeat_stability
+
+    cells = repeat_stability(records)
+    if not cells:
+        return "_No repeated trials recorded._\n"
+    buf = io.StringIO()
+    buf.write(
+        "| model | profile | attacks with ≥2 valid repeats | discordant (fooled) "
+        "| discordant (exposed) | failed trials |\n"
+    )
+    buf.write("|---|---|---|---|---|---|\n")
+    for c in cells:
+        buf.write(
+            f"| {c.model} | {c.profile} | {c.attacks_with_repeats} | "
+            f"{c.discordant_fooled} | {c.discordant_exposed} | {c.failed_trials} |\n"
+        )
     return buf.getvalue()
 
 
@@ -418,8 +484,11 @@ def render_csv(data: RunData) -> str:
             "defense_gap",
         ]
     )
-    for slice_by in (None, "form", "goal"):
-        for cell in summarize_attacks(data.attacks, slice_by=slice_by):
+    from gehrman_eval.stats import collapse_repeats
+
+    attacks = collapse_repeats(data.attacks)
+    for slice_by in (None, "group", "form", "goal"):
+        for cell in summarize_attacks(attacks, slice_by=slice_by):
             gap = cell.model_fooled.rate - cell.user_exposed.rate
             writer.writerow(
                 [

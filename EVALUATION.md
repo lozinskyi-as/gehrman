@@ -102,7 +102,8 @@ Useful flags:
 - `--profile none --profile deterministic` — repeat to restrict profiles.
 - `--attack <id>` or `--goal <goal>` / `--form <form>` — filter the corpus.
 - `--max-trials <N>` — hard cap for pilot runs.
-- `--repeats <N>` — replicate each trial for tighter CIs (default 1).
+- `--repeats <N>` — replicate each trial to measure stability (default 1).
+  Repeats are collapsed per attack and do not add to n.
 - `--no-controls` — skip the control-set phase.
 
 ## Reading the report
@@ -110,10 +111,24 @@ Useful flags:
 `RUN_DIR/report.md` has the main tables. The CSV sibling is friendlier
 for a plot.
 
+- **Unit of analysis.** One attack per model × profile. Repeats are
+  collapsed by majority vote (ties count for the attacker) and failed
+  trials are dropped from n. At temperature 0 repeats are not
+  independent samples; the **stability** table reports how many
+  attacks changed outcome between repeats.
 - **Attack success rate per model × profile** is the headline table.
   Both rates come with Wilson 95% intervals; the *defense gap* column
   is `model_fooled − user_exposed`. A profile with a large positive
   gap is doing real work.
+- **By group** splits *by-construction* attacks (synthetic canary;
+  the output checks can catch them by design) from *adaptive* attacks
+  (real out-of-scope host, another program's host or bounty, or no
+  host and no number). The adaptive rows show where the deterministic
+  layer stops working.
+- **Paired comparisons** run an exact McNemar test on the same attacks
+  for every profile pair within a model and for the same profile
+  across models. Only discordant pairs matter; with fewer than 6 of
+  them no difference can reach p < 0.05.
 - **By form** tells you where each attack style lands; **by goal**
   tells you which attack category each profile handles best.
 - **False-positive rate** on controls tells you the cost of enabling
@@ -144,12 +159,12 @@ for a plot.
 - **One domain, one platform shape.** The attacks target bug-bounty
   catalog text; generalising to e.g. support tickets or email
   summarisation is out of scope.
-- **Single model.** The thesis evaluates one local model (Ollama).
-  Generalisation to other models is future work; the harness already
-  supports additional model specs via `--model`.
+- **Two small models.** The thesis evaluates qwen2.5:3b and
+  llama3.2:3b on all four profiles. Results may not transfer to
+  larger models.
 - **Model nondeterminism.** Temperature is fixed at 0 and the trial
   seed is logged, but local inference is not bit-exact across runs
-  of the same prompt. Repeats and Wilson intervals are the mitigation.
+  of the same prompt. Repeats measure this; they do not shrink CIs.
 - **Deterministic checks are strict.** `scope_check` and
   `number_check` compare answer tokens to hosts and numbers seeded
   from trusted structured tool fields and the user's latest message.
@@ -157,5 +172,12 @@ for a plot.
   source. Legitimate paraphrases can still trip the checks. The
   control-set false-positive rate is the honest measurement of this
   cost.
-- **Small n.** A realistic full-corpus run is ~27 attacks × 4
-  profiles × 3 repeats ≈ 324 trials. CIs on per-cell rates are wide.
+- **Small n.** The corpus has 35 attacks (27 by construction, 8
+  adaptive), so each model × profile cell has n ≤ 35 attacks and
+  Wilson intervals are about ±15 percentage points at mid-range rates.
+  A full fast-suite run is 35 × 4 profiles × 2 models × 3 repeats =
+  840 attack trials plus controls.
+- **Synthetic injection channel.** Payloads go into `policy_excerpt`.
+  The real free-text fields (`instruction` on HackerOne assets,
+  `description` on Intigriti assets) are not stored, so the channel is
+  synthetic while every structured field is real.

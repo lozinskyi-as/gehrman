@@ -18,6 +18,7 @@ return rather than taking the whole turn down.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
@@ -35,14 +36,56 @@ _HOST_RE = re.compile(
 _NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,}(?:\.\d+)?\b")
 
 
-def sanitize(text: str, *, enabled: bool) -> tuple[str, bool]:
-    """Drop ASCII control bytes (except newline and tab).
+# Code points that are invisible or reorder text and carry no meaning in
+# a program policy. Attackers use them to hide instructions from human
+# reviewers while the model still reads them.
+_INVISIBLE_RANGES = (
+    (0x00AD, 0x00AD),  # soft hyphen
+    (0x200B, 0x200F),  # zero-width space/joiners, LRM/RLM
+    (0x202A, 0x202E),  # bidi embeddings and overrides
+    (0x2060, 0x2064),  # word joiner, invisible operators
+    (0x2066, 0x2069),  # bidi isolates
+    (0xFEFF, 0xFEFF),  # zero-width no-break space / BOM
+    (0xE0000, 0xE007F),  # Unicode tag characters
+)
 
-    `fired` is True when at least one byte was dropped.
+# Text that imitates the data fence written by `data_marking`. After NFKC
+# full-width brackets become ASCII, so one pattern covers both.
+_FENCE_RE = re.compile(r"<<\s*/?\s*(?:data|end)\b[^>]*>>?", re.IGNORECASE)
+_FENCE_REPLACEMENT = "[marker removed]"
+
+SANITIZE_MAX_CHARS = 4000
+
+
+def _is_dropped(ch: str) -> bool:
+    code = ord(ch)
+    if ch in "\n\t":
+        return False
+    if code < 32 or 0x7F <= code <= 0x9F:
+        return True
+    return any(lo <= code <= hi for lo, hi in _INVISIBLE_RANGES)
+
+
+def sanitize(
+    text: str, *, enabled: bool, max_chars: int = SANITIZE_MAX_CHARS
+) -> tuple[str, bool]:
+    """Baseline clean-up of untrusted catalog text.
+
+    In order: NFKC normalization; removal of C0/C1 control characters
+    (newline and tab kept), zero-width, bidi-control and Unicode tag
+    characters; replacement of anything that imitates the
+    `<<DATA ...>>` / `<<END>>` fence; truncation to `max_chars`.
+
+    This is a baseline layer, not a defense against well-formed natural
+    language instructions. `fired` is True when the text changed.
     """
     if not enabled:
         return text, False
-    cleaned = "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32)
+    cleaned = unicodedata.normalize("NFKC", text)
+    cleaned = "".join(ch for ch in cleaned if not _is_dropped(ch))
+    cleaned = _FENCE_RE.sub(_FENCE_REPLACEMENT, cleaned)
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars]
     return cleaned, cleaned != text
 
 

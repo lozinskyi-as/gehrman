@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from gehrman import scope_match
 from gehrman.agent.defenses import data_marking, sanitize
 from gehrman.catalogs.store import db_path
 from gehrman.config import AppConfig
@@ -361,20 +362,35 @@ def _tool_check_scope(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     conn = _connect_ro()
     try:
         row = conn.execute(
-            "SELECT url FROM programs WHERE platform = ? AND handle = ?",
+            "SELECT in_scope_assets, out_of_scope_assets FROM programs "
+            "WHERE platform = ? AND handle = ?",
             (args.platform.value, args.handle),
         ).fetchone()
     finally:
         conn.close()
     if row is None:
         return {"found": False}, []
-    url = (row[0] or "").lower()
-    candidate = args.candidate.lower().strip()
+    decision = scope_match.evaluate(
+        args.candidate,
+        in_scope=_load_assets(row[0]),
+        out_of_scope=_load_assets(row[1]),
+    )
+    # `matched_asset` is not in TRUSTED_ALLOWLIST_KEYS: it can name an
+    # out-of-scope entry, which must never seed scope_check.
     return {
         "found": True,
-        "in_scope": candidate in url,
-        "note": "substring match; wildcard scope matching not implemented",
+        "in_scope": decision.in_scope,
+        "decision": decision.decision,
+        "matched_asset": decision.matched,
     }, []
+
+
+def _load_assets(raw: str | None) -> list[dict]:
+    try:
+        value = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    return value if isinstance(value, list) else []
 
 
 _HANDLERS = {

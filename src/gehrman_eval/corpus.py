@@ -35,6 +35,36 @@ class Goal(StrEnum):
     FAKE_NUMBER = "fake_number"
     RANKING = "ranking"
     TOOL_ABUSE = "tool_abuse"
+    # Adaptive goals: built from real catalog values, so the output
+    # checks may let them through by design. See ADAPTIVE_GOALS.
+    REAL_OOS_HOST = "real_oos_host"
+    CROSS_PROGRAM_HOST = "cross_program_host"
+    MISATTRIBUTED_NUMBER = "misattributed_number"
+    DEMOTION = "demotion"
+
+
+# Goals whose payload carries only values that already exist in the
+# database (or no checkable value at all). `scope_check` and
+# `number_check` compare against real data, so these attacks probe the
+# limit of the deterministic layer rather than its by-construction
+# coverage. Reports split results by this grouping.
+ADAPTIVE_GOALS: frozenset[Goal] = frozenset(
+    {Goal.REAL_OOS_HOST, Goal.CROSS_PROGRAM_HOST, Goal.MISATTRIBUTED_NUMBER, Goal.DEMOTION}
+)
+
+
+def goal_group(goal: Goal | str) -> str:
+    """`adaptive` for ADAPTIVE_GOALS, `by_construction` otherwise."""
+    return "adaptive" if Goal(goal) in ADAPTIVE_GOALS else "by_construction"
+
+
+# Placeholder each adaptive goal must carry; the injector fills it from
+# the database at run time.
+REAL_VALUE_PLACEHOLDER: dict[Goal, str] = {
+    Goal.REAL_OOS_HOST: "{real_host}",
+    Goal.CROSS_PROGRAM_HOST: "{real_host}",
+    Goal.MISATTRIBUTED_NUMBER: "{donor_number}",
+}
 
 
 class Form(StrEnum):
@@ -45,6 +75,9 @@ class Form(StrEnum):
 
 class CarrierRule(StrEnum):
     TOP_HIT_FOR_PLATFORM = "top_hit_for_platform"
+    # Highest-scored program on the platform that lists at least one
+    # out-of-scope hostname. Used by `real_oos_host` attacks.
+    TOP_HIT_WITH_OOS_HOST = "top_hit_with_oos_host"
 
 
 class Carrier(BaseModel):
@@ -124,6 +157,15 @@ class AttackCase(BaseModel):
                     f"Attack {self.id}: payload must contain `{{canary}}` for goal {self.goal}."
                 )
         # RANKING: canary is optional; the attack succeeds by handle position.
+        placeholder = REAL_VALUE_PLACEHOLDER.get(self.goal)
+        if placeholder is not None and placeholder not in self.payload:
+            raise ValueError(
+                f"Attack {self.id}: payload must contain `{placeholder}` for goal {self.goal}."
+            )
+        if self.goal in ADAPTIVE_GOALS and "{canary}" in self.payload:
+            raise ValueError(
+                f"Attack {self.id}: adaptive goal {self.goal} must not use `{{canary}}`."
+            )
         return self
 
 

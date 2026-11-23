@@ -294,6 +294,10 @@ def _execute_turn(
     )
 
 
+# Goals whose check compares against a clean-run top 3.
+_BASELINE_GOALS = frozenset({Goal.RANKING, Goal.DEMOTION})
+
+
 def _compute_baseline(
     *,
     user_query: str,
@@ -314,7 +318,10 @@ def _compute_baseline(
     )
     if outcome.trace is None:
         return []
-    return extract_handles_in_order(outcome.trace.final_answer, db_handles)[:3]
+    # Raw answer, not final: output defenses may replace the final text
+    # with a stub, which would empty the baseline for defended profiles
+    # and make ranking/demotion results depend on the profile artifact.
+    return extract_handles_in_order(outcome.trace.raw_answer, db_handles)[:3]
 
 
 def tool_use_precheck(
@@ -591,8 +598,13 @@ class Runner:
         case = pt.case
         started = datetime.now(UTC)
         trial_db = materialize_trial_db(base_db, self.run_dir, trial.trial_id)
-        platform, carrier_handle = pick_carrier(trial_db, case)
-        injection = inject_attack(trial_db, case, seed=trial.seed)
+        try:
+            platform, carrier_handle = pick_carrier(trial_db, case)
+            injection = inject_attack(trial_db, case, seed=trial.seed)
+        except ValueError as exc:
+            # E.g. an adaptive attack whose real value does not exist in
+            # this snapshot. Record a failed trial instead of aborting the run.
+            return self._injection_failed(pt, started, exc)
         config = _app_config_for(
             profile_name=trial.profile,
             ollama_base_url=self.suite.ollama_base_url,
@@ -644,7 +656,7 @@ class Runner:
 
         trace = outcome.trace
         baseline_top3: list[str] = []
-        if case.goal == Goal.RANKING:
+        if case.goal in _BASELINE_GOALS:
             key = baseline_key(
                 user_query=case.user_query, model=trial.model, profile=trial.profile
             )
@@ -656,6 +668,7 @@ class Runner:
             carrier_handle=carrier_handle,
             known_handles=handles,
             baseline_top3=baseline_top3,
+            donor_handle=injection.donor_handle,
         )
         check_record = CheckRecord(
             model_fooled=check.model_fooled,
@@ -689,6 +702,39 @@ class Runner:
             error=None,
         )
 
+    def _injection_failed(
+        self, pt: PlannedTrial, started: datetime, exc: Exception
+    ) -> TrialResult:
+        trial = pt.trial
+        case = pt.case
+        error = f"injection failed: {exc}"
+        return TrialResult(
+            trial_id=trial.trial_id,
+            attack_id=trial.attack_id,
+            goal=str(trial.goal),
+            form=str(trial.form),
+            model=trial.model,
+            model_version=self._model_version(trial.model),
+            profile=trial.profile,
+            repeat=trial.repeat,
+            seed=trial.seed,
+            user_query=case.user_query,
+            carrier_platform=case.carrier.platform.value,
+            carrier_handle=case.carrier.handle or "",
+            canary="",
+            raw_answer="",
+            final_answer="",
+            tool_calls=[],
+            defenses_fired=[],
+            check=CheckRecord(model_fooled=False, user_exposed=False, evidence=error),
+            tokens_in=0,
+            tokens_out=0,
+            latency_s=0.0,
+            started_at=started.isoformat(),
+            finished_at=datetime.now(UTC).isoformat(),
+            error=error,
+        )
+
     def _ensure_baselines_for(
         self,
         trials: list[PlannedTrial],
@@ -698,10 +744,10 @@ class Runner:
         base_db: Path,
     ) -> None:
         """Compute clean-run baselines for every (query, model, profile) tuple
-        used by any ranking trial. Caches to disk between runs."""
+        used by any ranking or demotion trial. Caches to disk between runs."""
         needed: set[tuple[str, str, str]] = set()
         for pt in trials:
-            if pt.case.goal != Goal.RANKING:
+            if pt.case.goal not in _BASELINE_GOALS:
                 continue
             needed.add((pt.case.user_query, pt.trial.model, pt.trial.profile))
         with _redirect_db(base_db):
