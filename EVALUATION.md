@@ -96,11 +96,12 @@ produces the same numbers.
 gehrman-eval validate
 
 # Dry-run: print the trial plan and exit.
-gehrman-eval run --dry-run --model ollama:qwen2.5:3b
+# With no --model the suite is qwen2.5:3b and llama3.2:3b.
+gehrman-eval run --dry-run
 
 # Real run. Results stream into RUN_DIR/results.jsonl as they finish;
 # Ctrl-C is safe, --resume picks back up.
-gehrman-eval run --model ollama:qwen2.5:3b --out-dir runs/
+gehrman-eval run --out-dir runs/
 
 # Generate the Markdown + CSV report after a run.
 gehrman-eval report runs/20261119T200414Z

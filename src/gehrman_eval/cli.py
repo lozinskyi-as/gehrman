@@ -73,7 +73,10 @@ def run_command(
     ] = False,
     model: Annotated[
         list[str] | None,
-        typer.Option("--model", help="Model spec; repeatable. e.g. ollama:llama3.1"),
+        typer.Option(
+            "--model",
+            help="Model spec; repeatable. Default: ollama:qwen2.5:3b and ollama:llama3.2:3b.",
+        ),
     ] = None,
     profile: Annotated[
         list[str] | None,

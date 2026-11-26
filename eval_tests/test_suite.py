@@ -10,7 +10,7 @@ from gehrman_eval.suite import Suite, load_suite, merge_cli_overrides
 
 def test_suite_defaults_are_sane() -> None:
     suite = Suite()
-    assert suite.models == ["ollama:llama3.1"]
+    assert suite.models == ["ollama:qwen2.5:3b", "ollama:llama3.2:3b"]
     assert "none" in suite.profiles
     assert "all" in suite.profiles
     assert suite.repeats == 1
@@ -21,7 +21,7 @@ def test_load_suite_from_yaml(tmp_path: Path) -> None:
     path = tmp_path / "suite.yaml"
     path.write_text(
         """
-models: [ollama:llama3.1, ollama:qwen2.5]
+models: [ollama:qwen2.5:3b, ollama:llama3.2:3b]
 profiles: [none, prompt]
 repeats: 2
 seed: 7
@@ -30,7 +30,7 @@ max_trials: 10
         encoding="utf-8",
     )
     suite = load_suite(path)
-    assert suite.models == ["ollama:llama3.1", "ollama:qwen2.5"]
+    assert suite.models == ["ollama:qwen2.5:3b", "ollama:llama3.2:3b"]
     assert suite.profiles == ["none", "prompt"]
     assert suite.repeats == 2
     assert suite.seed == 7

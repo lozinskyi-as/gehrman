@@ -18,7 +18,7 @@ from ruamel.yaml import YAML
 
 from gehrman_eval.corpus import Form, Goal
 
-DEFAULT_MODELS = ("ollama:llama3.1",)
+DEFAULT_MODELS = ("ollama:qwen2.5:3b", "ollama:llama3.2:3b")
 # The original four. `deterministic_v2` and `all_v2` are opt-in so a
 # default run stays comparable with the v1 defense checks.
 DEFAULT_PROFILES = ("none", "prompt", "deterministic", "all")
