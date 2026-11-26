@@ -112,6 +112,7 @@ bounty_only = false
 sanitize = false
 ai_guard_input = true
 ai_guard_output = false
+check_version = 1
 
 [ai_guard]
 model = "old:latest"

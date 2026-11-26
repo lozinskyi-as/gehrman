@@ -108,9 +108,6 @@ class DefensesConfig(BaseModel):
     data_marking: bool = True
     scope_check: bool = True
     number_check: bool = True
-    # 1 keeps the original host and number checks. 2 is the tighter
-    # check used by the `*_v2` evaluation profiles.
-    check_version: int = Field(default=1, ge=1, le=2)
 
 
 class AppConfig(BaseModel):
@@ -146,20 +143,20 @@ def _assert_no_secret_keys(payload: object, prefix: str = "") -> None:
             _assert_no_secret_keys(item, f"{prefix}[{index}]")
 
 
-# Keys written by init before the AI guard was removed. Dropped so an
-# existing config.toml still loads. Every other unknown key is rejected.
-_LEGACY_AI_GUARD_DEFENSE_KEYS = frozenset({"ai_guard_input", "ai_guard_output"})
+# Retired defense keys. Dropped so an existing config.toml still loads.
+# Every other unknown key is rejected.
+_LEGACY_DEFENSE_KEYS = frozenset({"ai_guard_input", "ai_guard_output", "check_version"})
 
 
 def _drop_legacy_ai_guard(data: dict) -> bool:
-    """Remove retired AI-guard keys. Returns True when anything was dropped."""
+    """Remove retired defense keys. Returns True when anything was dropped."""
     dropped = False
     if "ai_guard" in data:
         data.pop("ai_guard")
         dropped = True
     defenses = data.get("defenses")
     if isinstance(defenses, dict):
-        for key in _LEGACY_AI_GUARD_DEFENSE_KEYS:
+        for key in _LEGACY_DEFENSE_KEYS:
             if key in defenses:
                 defenses.pop(key)
                 dropped = True
@@ -176,7 +173,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         data = tomllib.load(handle)
     if _drop_legacy_ai_guard(data):
         print(
-            "Warning: config.toml still contains retired AI guard settings. "
+            "Warning: config.toml still contains retired defense settings. "
             "Re-run `gehrman init` to rewrite it.",
             file=sys.stderr,
         )

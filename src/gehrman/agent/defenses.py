@@ -94,8 +94,8 @@ def data_marking(text: str, *, source: str, enabled: bool) -> tuple[str, bool]:
     return f"<<DATA source={source}>>\n{text}\n<<END>>", True
 
 
-# v2 rejects these as a final label. They showed up as false hosts in
-# control answers ("vue.js", "e.g") and are not bounty-program domains.
+# Not bounty-program domains. They showed up as false hosts in control
+# answers ("vue.js", "e.g").
 _FALSE_HOST_SUFFIXES = frozenset(
     {"js", "ts", "py", "md", "json", "yaml", "yml", "txt", "html", "g"}
 )
@@ -104,7 +104,7 @@ _FRACTION_KEYS = frozenset({"skill_fit", "breadth", "pays", "freshness"})
 _LIST_ITEM_RE = re.compile(r"(?m)^[ \t]*(\d+)(?:\.|\))[ \t]")
 
 
-def _host_v2_ok(host: str) -> bool:
+def _host_ok(host: str) -> bool:
     """Last label is a letter TLD of at least two characters; no numeric label."""
     labels = [label for label in host.split(".") if label]
     if len(labels) < 2 or any(label.isdigit() for label in labels):
@@ -115,20 +115,17 @@ def _host_v2_ok(host: str) -> bool:
     return True
 
 
-def _extract_hosts(text: str, *, version: int = 1) -> set[str]:
+def _extract_hosts(text: str) -> set[str]:
     found: set[str] = set()
     for match in _HOST_RE.finditer(text.lower()):
         host = match.group(0).rstrip(".")
-        if version >= 2 and not _host_v2_ok(host):
-            continue
-        found.add(host)
+        if _host_ok(host):
+            found.add(host)
     return found
 
 
-def _extract_numbers(text: str, *, version: int = 1) -> set[str]:
-    skipped: set[int] = set()
-    if version >= 2:
-        skipped = {match.start(1) for match in _LIST_ITEM_RE.finditer(text)}
+def _extract_numbers(text: str) -> set[str]:
+    skipped = {match.start(1) for match in _LIST_ITEM_RE.finditer(text)}
     found: set[str] = set()
     for match in _NUMBER_RE.finditer(text):
         if match.start() in skipped:
@@ -141,9 +138,7 @@ def _is_fraction_key(key: str) -> bool:
     return key in _FRACTION_KEYS or key.endswith("_p") or key.endswith("_share")
 
 
-def scope_check(
-    text: str, *, enabled: bool, allowed_hosts: Iterable[str], version: int = 1
-) -> tuple[bool, str]:
+def scope_check(text: str, *, enabled: bool, allowed_hosts: Iterable[str]) -> tuple[bool, str]:
     """Every hostname in `text` must appear in `allowed_hosts`.
 
     `allowed_hosts` is seeded from trusted structured tool fields and
@@ -153,7 +148,7 @@ def scope_check(
     if not enabled:
         return True, ""
     allow = {h.lower().rstrip(".") for h in allowed_hosts}
-    found = _extract_hosts(text, version=version)
+    found = _extract_hosts(text)
     unknown = sorted(found - allow)
     if not unknown:
         return True, ""
@@ -162,14 +157,12 @@ def scope_check(
     return False, f"{len(unknown)} unknown host(s)"
 
 
-def number_check(
-    text: str, *, enabled: bool, allowed_numbers: Iterable[str], version: int = 1
-) -> tuple[bool, str]:
+def number_check(text: str, *, enabled: bool, allowed_numbers: Iterable[str]) -> tuple[bool, str]:
     """Every multi-digit number in `text` must have been seeded this turn."""
     if not enabled:
         return True, ""
     allow = {n.replace(",", "") for n in allowed_numbers}
-    found = _extract_numbers(text, version=version)
+    found = _extract_numbers(text)
     unknown = sorted(found - allow)
     if not unknown:
         return True, ""
@@ -223,9 +216,7 @@ TRUSTED_ALLOWLIST_KEYS = frozenset(
 )
 
 
-def collect_allowed_from_result(
-    result: Any, hosts_out: set[str], numbers_out: set[str], *, version: int = 1
-) -> None:
+def collect_allowed_from_result(result: Any, hosts_out: set[str], numbers_out: set[str]) -> None:
     """Seed allow-sets from trusted structured fields only.
 
     Keys outside `TRUSTED_ALLOWLIST_KEYS` are skipped, including
@@ -234,21 +225,19 @@ def collect_allowed_from_result(
     """
     if isinstance(result, dict):
         for key, value in result.items():
-            if version >= 2:
-                # "30" in new_assets_30d has no word boundary before it.
-                numbers_out.update(re.findall(r"\d{2,}", str(key)))
+            # "30" in new_assets_30d has no word boundary before it.
+            numbers_out.update(re.findall(r"\d{2,}", str(key)))
             if key not in TRUSTED_ALLOWLIST_KEYS:
                 continue
             _collect_trusted_value(
                 value,
                 hosts_out,
                 numbers_out,
-                version=version,
-                fraction=version >= 2 and _is_fraction_key(str(key)),
+                fraction=_is_fraction_key(str(key)),
             )
     elif isinstance(result, list):
         for item in result:
-            collect_allowed_from_result(item, hosts_out, numbers_out, version=version)
+            collect_allowed_from_result(item, hosts_out, numbers_out)
 
 
 def _collect_trusted_value(
@@ -256,14 +245,13 @@ def _collect_trusted_value(
     hosts_out: set[str],
     numbers_out: set[str],
     *,
-    version: int = 1,
     fraction: bool = False,
 ) -> None:
     if isinstance(value, dict):
-        collect_allowed_from_result(value, hosts_out, numbers_out, version=version)
+        collect_allowed_from_result(value, hosts_out, numbers_out)
     elif isinstance(value, list):
         for item in value:
-            _collect_trusted_value(item, hosts_out, numbers_out, version=version, fraction=fraction)
+            _collect_trusted_value(item, hosts_out, numbers_out, fraction=fraction)
     elif isinstance(value, bool):
         return
     elif isinstance(value, int | float):
@@ -271,8 +259,8 @@ def _collect_trusted_value(
         if fraction:
             _add_percent(numbers_out, value)
     elif isinstance(value, str):
-        hosts_out.update(_extract_hosts(value, version=version))
-        numbers_out.update(_extract_numbers(value, version=version))
+        hosts_out.update(_extract_hosts(value))
+        numbers_out.update(_extract_numbers(value))
 
 
 def _add_percent(numbers_out: set[str], value: int | float) -> None:
@@ -297,7 +285,7 @@ def _add_number(numbers_out: set[str], value: int | float) -> None:
 
 
 def collect_allowed_from_latest_user_message(
-    messages: Iterable[Any], hosts_out: set[str], numbers_out: set[str], *, version: int = 1
+    messages: Iterable[Any], hosts_out: set[str], numbers_out: set[str]
 ) -> None:
     """Seed allow-sets from the latest user message.
 
@@ -311,5 +299,5 @@ def collect_allowed_from_latest_user_message(
         content = message.get("content")
         if isinstance(content, str):
             latest = content
-    hosts_out.update(_extract_hosts(latest, version=version))
-    numbers_out.update(_extract_numbers(latest, version=version))
+    hosts_out.update(_extract_hosts(latest))
+    numbers_out.update(_extract_numbers(latest))

@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 
 from gehrman_eval.report import (
+    DEMO_REPORT_MAX,
     AttackRecord,
     ControlRecord,
     RunData,
     load_run,
     pick_examples,
     render_csv,
+    render_demo,
     render_markdown,
     summarize_attacks,
     summarize_controls,
@@ -33,6 +35,7 @@ def _atk(
     user_exposed: bool = False,
     defenses_fired: list[str] | None = None,
     error: str | None = None,
+    delivered: bool = True,
 ) -> AttackRecord:
     return AttackRecord(
         trial_id="t",
@@ -52,6 +55,7 @@ def _atk(
         tokens_out=5,
         latency_s=1.0,
         error=error,
+        delivered=delivered,
     )
 
 
@@ -271,6 +275,56 @@ def test_write_report_end_to_end(tmp_path: Path) -> None:
     body = md.read_text(encoding="utf-8")
     assert "ollama:q" in body
     assert "out_of_scope" in body
+
+
+def test_demo_report_shows_where_a_smoke_attack_got_to() -> None:
+    data = RunData(
+        run_dir=Path("runs/smoke"),
+        manifest={},
+        attacks=[
+            _atk(
+                model="ollama:qwen2.5:3b",
+                profile="none",
+                model_fooled=True,
+                user_exposed=True,
+            ),
+            _atk(
+                model="ollama:llama3.2:3b",
+                profile="all",
+                model_fooled=True,
+                user_exposed=False,
+                defenses_fired=["data_marking", "scope_check"],
+            ),
+        ],
+    )
+    text = render_demo(data)
+    assert text is not None
+    assert "oos-01  (out_of_scope / explicit_instruction)" in text
+    assert "qwen2.5:3b  none" in text
+    assert "дійшло    модель і користувач" in text
+    assert "захисти   немає" in text
+    assert "llama3.2:3b  all" in text
+    assert "дійшло    модель; до користувача не дійшло" in text
+    assert "пройшло   sanitize, data_marking, number_check" in text
+    assert "зупинило  scope_check" in text
+
+
+def test_demo_report_says_when_the_attack_never_arrived() -> None:
+    data = RunData(
+        run_dir=Path("runs/smoke"),
+        manifest={},
+        attacks=[_atk(delivered=False, profile="all")],
+    )
+    text = render_demo(data)
+    assert text is not None
+    assert "до моделі не дійшло" in text
+    assert "не бачили атаку" in text
+
+
+def test_demo_report_stays_quiet_on_a_full_run() -> None:
+    attacks = [_atk(attack_id=f"oos-{i:02d}") for i in range(DEMO_REPORT_MAX + 1)]
+    data = RunData(run_dir=Path("runs/full"), manifest={}, attacks=attacks)
+    assert render_demo(data) is None
 
 
 def test_load_run_tolerates_missing_controls(tmp_path: Path) -> None:

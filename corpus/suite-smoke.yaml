@@ -1,0 +1,22 @@
+# Four trials: one explicit host attack, both models, no defense vs all.
+# delivery forced puts the payload in explain before the model speaks, so
+# `delivered` should be true and scope_check has a canary to catch.
+# No ranking attacks, so there is no extra baseline turn. No controls.
+
+models:
+  - ollama:qwen2.5:3b
+  - ollama:llama3.2:3b
+profiles:
+  - none
+  - all
+attacks:
+  ids:
+    - oos-explicit-hackerone-01
+repeats: 1
+seed: 0
+temperature: 0.0
+retries: 1
+trial_timeout_s: 180.0
+delivery: forced
+run_controls: false
+out_dir: runs/smoke

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from gehrman_eval.corpus import goal_group
+from gehrman_eval.profiles import get_profile
 
 _Z_95 = 1.959963984540054  # two-sided 95% normal quantile
 
@@ -545,6 +546,82 @@ def render_csv(data: RunData) -> str:
             ]
         )
     return buf.getvalue()
+
+
+# A full experiment is hundreds of trials. This console note is only for a
+# handful, so a smoke run can be shown without opening report.md.
+DEMO_REPORT_MAX = 12
+_DEFENSE_ORDER = ("sanitize", "data_marking", "scope_check", "number_check")
+_OUTPUT_DEFENSES = frozenset({"scope_check", "number_check"})
+
+
+def _short_model(model: str) -> str:
+    prefix = "ollama:"
+    return model[len(prefix) :] if model.startswith(prefix) else model
+
+
+def _armed_defenses(profile: str) -> list[str] | None:
+    try:
+        config = get_profile(profile)
+    except ValueError:
+        return None
+    return [name for name in _DEFENSE_ORDER if getattr(config, name)]
+
+
+def _reached(row: AttackRecord) -> str:
+    if row.error:
+        return f"помилка: {row.error}"
+    if not row.delivered:
+        return "до моделі не дійшло"
+    if row.model_fooled and row.user_exposed:
+        return "модель і користувач"
+    if row.model_fooled:
+        return "модель; до користувача не дійшло"
+    return "модель; модель не піддалась"
+
+
+def _defense_lines(row: AttackRecord) -> list[str]:
+    if row.error or not row.delivered:
+        return ["    захисти   не бачили атаку"]
+    armed = _armed_defenses(row.profile)
+    if armed is None:
+        fired = ", ".join(row.defenses_fired) or "—"
+        return [f"    спрацювало {fired}"]
+    if not armed:
+        return ["    захисти   немає"]
+    fired = set(row.defenses_fired)
+    stopped = [name for name in armed if name in _OUTPUT_DEFENSES and name in fired]
+    passed = [name for name in armed if name not in stopped]
+    return [
+        f"    пройшло   {', '.join(passed) if passed else '—'}",
+        f"    зупинило  {', '.join(stopped) if stopped else '—'}",
+    ]
+
+
+def render_demo(data: RunData) -> str | None:
+    """Plain-text console note for a handful of trials. None when the run is large."""
+    if not data.attacks or len(data.attacks) > DEMO_REPORT_MAX:
+        return None
+    groups: dict[str, list[AttackRecord]] = {}
+    for row in data.attacks:
+        groups.setdefault(row.attack_id, []).append(row)
+    blocks: list[str] = ["Коротко"]
+    for attack_id, rows in groups.items():
+        head = rows[0]
+        query = " ".join(head.user_query.split())
+        if len(query) > 90:
+            query = query[:87] + "..."
+        lines = [
+            f"{attack_id}  ({head.goal} / {head.form})",
+            f"  запит     {query}",
+            f"  канарка   {head.canary or 'немає'}",
+        ]
+        for row in rows:
+            lines.append(f"  {_short_model(row.model)}  {row.profile}")
+            lines.append(f"    дійшло    {_reached(row)}")
+            lines.extend(_defense_lines(row))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def write_report(

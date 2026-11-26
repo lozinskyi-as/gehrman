@@ -127,10 +127,7 @@ def run_turn(
     allowed_hosts: set[str] = set()
     allowed_numbers: set[str] = set()
     # The user is trusted. Tool arguments are not: the model writes them.
-    version = config.defenses.check_version
-    collect_allowed_from_latest_user_message(
-        messages, allowed_hosts, allowed_numbers, version=version
-    )
+    collect_allowed_from_latest_user_message(messages, allowed_hosts, allowed_numbers)
 
     if forced_calls:
         _perform_tool_calls(
@@ -248,9 +245,7 @@ def _perform_tool_calls(
             call_trace.result = result
             call_trace.fired_defenses.extend(fired)
             trace.defenses_fired.extend(fired)
-            collect_allowed_from_result(
-                result, allowed_hosts, allowed_numbers, version=config.defenses.check_version
-            )
+            collect_allowed_from_result(result, allowed_hosts, allowed_numbers)
             content = json.dumps(result)
             if on_event is not None:
                 on_event("tool_result", {"name": call.name, "result": result})
@@ -330,7 +325,6 @@ def _apply_output_defenses(
         raw,
         enabled=config.defenses.scope_check,
         allowed_hosts=allowed_hosts,
-        version=config.defenses.check_version,
     )
     if config.defenses.scope_check and not ok:
         defenses_fired.append("scope_check")
@@ -340,7 +334,6 @@ def _apply_output_defenses(
         raw,
         enabled=config.defenses.number_check,
         allowed_numbers=allowed_numbers,
-        version=config.defenses.check_version,
     )
     if config.defenses.number_check and not ok:
         defenses_fired.append("number_check")

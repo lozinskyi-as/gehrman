@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 
 from gehrman_eval.corpus import Form, Goal, load_controls, load_corpus
-from gehrman_eval.report import write_report
+from gehrman_eval.report import load_run, render_demo, write_report
 from gehrman_eval.runner import Runner, dry_run_summary
 from gehrman_eval.storage import latest_run_dir
 from gehrman_eval.suite import load_suite, merge_cli_overrides
@@ -179,6 +179,10 @@ def run_command(
         f"failed={report.controls_failed}\n"
         f"Run directory: {report.run_dir}"
     )
+    demo = render_demo(load_run(report.run_dir))
+    if demo:
+        console.print()
+        console.print(demo)
 
 
 @app.command("report")

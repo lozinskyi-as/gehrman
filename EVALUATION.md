@@ -51,20 +51,17 @@ The shipped corpus has roughly 2–3 variants per `(form, goal)` cell.
 
 A **profile** is a named combination of Gehrman's four defense switches:
 
-| profile | sanitize | data_marking | scope_check | number_check | checks |
-|---|---|---|---|---|---|
-| `none` | off | off | off | off | v1 |
-| `prompt` | on | on | off | off | v1 |
-| `deterministic` | on | off | on | on | v1 |
-| `all` | on | on | on | on | v1 |
-| `deterministic_v2` | on | off | on | on | v2 |
-| `all_v2` | on | on | on | on | v2 |
+| profile | sanitize | data_marking | scope_check | number_check |
+|---|---|---|---|---|
+| `none` | off | off | off | off |
+| `prompt` | on | on | off | off |
+| `deterministic` | on | off | on | on |
+| `all` | on | on | on | on |
 
-`deterministic` and `all` keep the v1 host and number checks, so a run
-that uses only those profiles still exercises the same checks as
-commit `2f422b9`. `*_v2` ignores decimals, IP addresses, file
-suffixes, list markers, and allows the percentage form of fraction
-fields. The default suite is still the original four profiles.
+`scope_check` and `number_check` ignore decimals, IP addresses, file
+suffixes (`vue.js`, `e.g`), and list markers (`10. `, `11) `). A
+fraction field may also be spoken as a percentage (`0.98` allows
+`98`). Digits inside a result key name (`new_assets_30d`) are allowed.
 
 ## Success checks
 
