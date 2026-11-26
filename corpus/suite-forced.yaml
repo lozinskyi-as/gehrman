@@ -1,0 +1,18 @@
+# Final thesis run: the payload is always delivered (get+explain on the carrier
+# before the model speaks), so every trial tests the injection itself.
+# One repeat; controls are skipped because v2 controls already exist
+# from the natural-delivery run.
+models:
+  - ollama:qwen2.5:3b
+  - ollama:llama3.2:3b
+profiles:
+  - none
+  - all
+repeats: 1
+seed: 0
+temperature: 0.0
+retries: 1
+trial_timeout_s: 300.0
+delivery: forced
+run_controls: false
+out_dir: runs/forced
