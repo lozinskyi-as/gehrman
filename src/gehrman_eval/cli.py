@@ -179,10 +179,10 @@ def run_command(
         f"failed={report.controls_failed}\n"
         f"Run directory: {report.run_dir}"
     )
-    demo = render_demo(load_run(report.run_dir))
+    demo = render_demo(load_run(report.run_dir), profiles=resolved.profiles)
     if demo:
         console.print()
-        console.print(demo)
+        console.print(demo, markup=False, highlight=False)
 
 
 @app.command("report")

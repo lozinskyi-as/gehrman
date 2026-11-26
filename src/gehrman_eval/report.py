@@ -24,7 +24,7 @@ import io
 import json
 import math
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,6 +88,9 @@ class AttackRecord:
     # Runs recorded before delivery tracking omit the field. Those trials
     # stay in the headline rates instead of all being dropped.
     delivered: bool = True
+    # Policy text the model was shown, including a data-marking fence
+    # when that defense is on. Empty when explain never returned one.
+    policy_excerpt: str = ""
 
 
 @dataclass
@@ -145,6 +148,7 @@ def load_run(run_dir: Path) -> RunData:
                     latency_s=float(r.get("latency_s", 0.0) or 0.0),
                     error=r.get("error"),
                     delivered=bool(r["delivered"]) if "delivered" in r else True,
+                    policy_excerpt=_policy_excerpt(r.get("tool_calls")),
                 )
             )
     controls: list[ControlRecord] = []
@@ -555,6 +559,51 @@ _DEFENSE_ORDER = ("sanitize", "data_marking", "scope_check", "number_check")
 _OUTPUT_DEFENSES = frozenset({"scope_check", "number_check"})
 
 
+def _policy_excerpt(tool_calls: object) -> str:
+    """Last explain result's policy text, or empty when explain was not called."""
+    if not isinstance(tool_calls, list):
+        return ""
+    found = ""
+    for call in tool_calls:
+        if not isinstance(call, dict) or call.get("name") != "explain":
+            continue
+        result = call.get("result")
+        if not isinstance(result, dict):
+            continue
+        text = result.get("policy_excerpt")
+        if isinstance(text, str) and text.strip():
+            found = text
+    return found
+
+
+_RULE = 68
+
+
+def _bar(char: str = "─") -> str:
+    return char * _RULE
+
+
+def _section(title: str) -> str:
+    label = f"── {title} "
+    if len(label) >= _RULE:
+        return label
+    return label + "─" * (_RULE - len(label))
+
+
+def _field(label: str, value: str) -> str:
+    return f"{label:<12}{value}"
+
+
+def _quote(label: str, text: str) -> list[str]:
+    body = text.strip("\n")
+    lines = ["", label]
+    if not body.strip():
+        lines.append("  немає")
+        return lines
+    lines.extend(f"  {line}" if line else "" for line in body.splitlines())
+    return lines
+
+
 def _short_model(model: str) -> str:
     prefix = "ollama:"
     return model[len(prefix) :] if model.startswith(prefix) else model
@@ -582,46 +631,66 @@ def _reached(row: AttackRecord) -> str:
 
 def _defense_lines(row: AttackRecord) -> list[str]:
     if row.error or not row.delivered:
-        return ["    захисти   не бачили атаку"]
+        return [_field("захисти", "не бачили атаку")]
     armed = _armed_defenses(row.profile)
     if armed is None:
         fired = ", ".join(row.defenses_fired) or "—"
-        return [f"    спрацювало {fired}"]
+        return [_field("спрацювало", fired)]
     if not armed:
-        return ["    захисти   немає"]
+        return [_field("захисти", "немає")]
     fired = set(row.defenses_fired)
     stopped = [name for name in armed if name in _OUTPUT_DEFENSES and name in fired]
     passed = [name for name in armed if name not in stopped]
     return [
-        f"    пройшло   {', '.join(passed) if passed else '—'}",
-        f"    зупинило  {', '.join(stopped) if stopped else '—'}",
+        _field("пройшло", ", ".join(passed) if passed else "—"),
+        _field("зупинило", ", ".join(stopped) if stopped else "—"),
     ]
 
 
-def render_demo(data: RunData) -> str | None:
-    """Plain-text console note for a handful of trials. None when the run is large."""
-    if not data.attacks or len(data.attacks) > DEMO_REPORT_MAX:
+def render_demo(data: RunData, *, profiles: Sequence[str] | None = None) -> str | None:
+    """Plain-text console note for a handful of trials. None when the run is large.
+
+    `profiles` limits the note to the suite that just ran, so a resumed
+    directory does not reprint trials from a profile name that is gone.
+    """
+    rows = data.attacks
+    if profiles is not None:
+        allowed = set(profiles)
+        rows = [row for row in rows if row.profile in allowed]
+    if not rows or len(rows) > DEMO_REPORT_MAX:
         return None
     groups: dict[str, list[AttackRecord]] = {}
-    for row in data.attacks:
+    for row in rows:
         groups.setdefault(row.attack_id, []).append(row)
-    blocks: list[str] = ["Коротко"]
-    for attack_id, rows in groups.items():
-        head = rows[0]
+    blocks: list[str] = ["Коротко", ""]
+    for attack_id, group in groups.items():
+        head = group[0]
         query = " ".join(head.user_query.split())
-        if len(query) > 90:
-            query = query[:87] + "..."
         lines = [
-            f"{attack_id}  ({head.goal} / {head.form})",
-            f"  запит     {query}",
-            f"  канарка   {head.canary or 'немає'}",
+            _bar("═"),
+            attack_id,
+            f"{head.goal} / {head.form}",
+            "",
+            "запит",
+            f"  {query}",
+            "",
+            "канарка",
+            f"  {head.canary or 'немає'}",
         ]
-        for row in rows:
-            lines.append(f"  {_short_model(row.model)}  {row.profile}")
-            lines.append(f"    дійшло    {_reached(row)}")
+        for row in group:
+            lines.append("")
+            lines.append(_section(f"{_short_model(row.model)} · {row.profile}"))
+            lines.append(_field("дійшло", _reached(row)))
             lines.extend(_defense_lines(row))
+            lines.extend(_quote("у політику", row.policy_excerpt))
+            lines.extend(_quote("модель написала", row.raw_answer))
+            if row.final_answer.strip() == row.raw_answer.strip():
+                lines.extend(["", "користувач побачив", "  той самий текст"])
+            else:
+                lines.extend(_quote("користувач побачив", row.final_answer))
+        lines.append(_bar("═"))
         blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
+    return "\n".join(blocks)
 
 
 def write_report(
