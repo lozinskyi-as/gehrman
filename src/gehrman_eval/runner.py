@@ -494,13 +494,6 @@ class Runner:
             prechecks=prechecks,
             controls_path=self.suite.controls if controls else None,
         )
-        for pc in prechecks:
-            if not pc.passed:
-                detail = pc.warning or pc.error or "no tool call"
-                self.console.print(
-                    f"[yellow]Tool-use precheck for {pc.model} failed ({detail}). "
-                    f"Attacks may not reach the model.[/yellow]"
-                )
 
         completed = completed_trial_ids(self.run_dir) if self.resume else set()
         baselines = read_baselines(self.run_dir)
