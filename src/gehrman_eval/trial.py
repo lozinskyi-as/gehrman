@@ -18,16 +18,12 @@ from typing import Any
 from gehrman_eval.corpus import AttackCase, Form, Goal
 
 
-def trial_id(
-    *, attack_id: str, model: str, profile: str, repeat: int, seed: int
-) -> str:
+def trial_id(*, attack_id: str, model: str, profile: str, repeat: int, seed: int) -> str:
     key = f"{attack_id}|{model}|{profile}|{repeat}|{seed}".encode()
     return hashlib.sha256(key).hexdigest()[:16]
 
 
-def control_trial_id(
-    *, control_id: str, model: str, profile: str, repeat: int, seed: int
-) -> str:
+def control_trial_id(*, control_id: str, model: str, profile: str, repeat: int, seed: int) -> str:
     key = f"CTRL|{control_id}|{model}|{profile}|{repeat}|{seed}".encode()
     return hashlib.sha256(key).hexdigest()[:16]
 
@@ -82,6 +78,7 @@ class ToolCallRecord:
     result: Any | None = None
     error: str | None = None
     fired_defenses: list[str] = field(default_factory=list)
+    forced: bool = False
 
 
 @dataclass
@@ -117,6 +114,8 @@ class TrialResult:
     started_at: str
     finished_at: str
     error: str | None = None
+    # True when the attack text was in a tool result the model actually saw.
+    delivered: bool = False
 
     def to_json_line(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

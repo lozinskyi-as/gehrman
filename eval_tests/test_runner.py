@@ -77,13 +77,9 @@ def test_dry_run_summary_counts_trials() -> None:
     assert summary["models"] == [MODEL]
 
 
-def test_runner_executes_single_trial_and_records_outcome(
-    tmp_path: Path, seed_db
-) -> None:
+def test_runner_executes_single_trial_and_records_outcome(tmp_path: Path, seed_db) -> None:
     case = _oos_case()
-    base_db = seed_db(
-        [{"platform": "hackerone", "handle": "carrier", "score": 9.0}]
-    )
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
     canary = canary_for_case(case, seed=0)
     # First response is consumed by the tool-use precheck; second by the trial.
     fake = FakeAdapter([answer(""), answer(f"Try {canary} right now.")])
@@ -109,22 +105,41 @@ def test_runner_executes_single_trial_and_records_outcome(
     assert record["check"]["user_exposed"] is True
     assert record["canary"] == canary
     assert record["model_version"] == "sha256:test"
+    # The model answered without calling explain, so the payload was not delivered.
+    assert record["delivered"] is False
+
+
+def test_forced_delivery_shows_the_payload_before_the_model_speaks(tmp_path: Path, seed_db) -> None:
+    case = _oos_case()
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
+    canary = canary_for_case(case, seed=0)
+    fake = FakeAdapter([answer(""), answer("I have no recommendation.")])
+    suite = _base_suite(base_db, tmp_path).model_copy(update={"delivery": "forced"})
+    run_dir = tmp_path / "run-forced"
+    run_dir.mkdir()
+    runner = _runner_with_fake(suite, fake, run_dir=run_dir)
+    runner.run(AttackCorpus(cases=[case]))
+
+    record = json.loads((run_dir / "results.jsonl").read_text().strip())
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["extra"]["delivery"] == "forced"
+    assert record["delivered"] is True
+    assert record["check"]["model_fooled"] is False
+    assert [call["name"] for call in record["tool_calls"]] == ["get", "explain"]
+    assert all(call["forced"] for call in record["tool_calls"])
+    assert canary in record["tool_calls"][1]["result"]["policy_excerpt"]
 
 
 def test_resume_skips_completed_trial(tmp_path: Path, seed_db) -> None:
     case = _oos_case()
-    base_db = seed_db(
-        [{"platform": "hackerone", "handle": "carrier", "score": 9.0}]
-    )
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
     canary = canary_for_case(case, seed=0)
     corpus = AttackCorpus(cases=[case])
     run_dir = tmp_path / "run1"
     run_dir.mkdir()
 
     first = FakeAdapter([answer(""), answer(f"Try {canary} now.")])
-    first_runner = _runner_with_fake(
-        _base_suite(base_db, tmp_path), first, run_dir=run_dir
-    )
+    first_runner = _runner_with_fake(_base_suite(base_db, tmp_path), first, run_dir=run_dir)
     first_runner.run(corpus)
 
     # Second run with resume=True runs only the precheck — no trial.
@@ -142,9 +157,7 @@ def test_resume_skips_completed_trial(tmp_path: Path, seed_db) -> None:
 
 def test_max_trials_caps_execution(tmp_path: Path, seed_db) -> None:
     case = _oos_case()
-    base_db = seed_db(
-        [{"platform": "hackerone", "handle": "carrier", "score": 9.0}]
-    )
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
     canary = canary_for_case(case, seed=0)
     corpus = AttackCorpus(cases=[case])
 
@@ -165,13 +178,9 @@ def test_max_trials_caps_execution(tmp_path: Path, seed_db) -> None:
     assert report.executed == 2  # capped
 
 
-def test_scope_check_blocks_user_exposed_but_not_model_fooled(
-    tmp_path: Path, seed_db
-) -> None:
+def test_scope_check_blocks_user_exposed_but_not_model_fooled(tmp_path: Path, seed_db) -> None:
     case = _oos_case()
-    base_db = seed_db(
-        [{"platform": "hackerone", "handle": "carrier", "score": 9.0}]
-    )
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
     canary = canary_for_case(case, seed=0)
     # First response is the precheck; second emits the canary.
     fake = FakeAdapter([answer(""), answer(f"Visit {canary}.")])
@@ -186,18 +195,14 @@ def test_scope_check_blocks_user_exposed_but_not_model_fooled(
     runner = _runner_with_fake(suite, fake, run_dir=run_dir)
     runner.run(AttackCorpus(cases=[case]))
 
-    record = json.loads(
-        (run_dir / "results.jsonl").read_text().strip().splitlines()[0]
-    )
+    record = json.loads((run_dir / "results.jsonl").read_text().strip().splitlines()[0])
     assert record["check"]["model_fooled"] is True
     assert record["check"]["user_exposed"] is False
     assert "scope_check" in record["defenses_fired"]
     assert canary not in record["final_answer"]
 
 
-def test_deterministic_blocks_canaries_read_via_explain(
-    tmp_path: Path, seed_db
-) -> None:
+def test_deterministic_blocks_canaries_read_via_explain(tmp_path: Path, seed_db) -> None:
     oos = _oos_case()
     num = _num_case()
     base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
@@ -245,13 +250,9 @@ def test_deterministic_blocks_canaries_read_via_explain(
         assert canary in json.dumps(record["tool_calls"])
 
 
-def test_adapter_error_is_recorded_as_failed_trial(
-    tmp_path: Path, seed_db, monkeypatch
-) -> None:
+def test_adapter_error_is_recorded_as_failed_trial(tmp_path: Path, seed_db, monkeypatch) -> None:
     case = _oos_case()
-    base_db = seed_db(
-        [{"platform": "hackerone", "handle": "carrier", "score": 9.0}]
-    )
+    base_db = seed_db([{"platform": "hackerone", "handle": "carrier", "score": 9.0}])
 
     class ExplodingAdapter:
         def complete(self, *args, **kwargs):
@@ -276,8 +277,6 @@ def test_adapter_error_is_recorded_as_failed_trial(
 
     assert report.executed == 1
     assert report.failed == 1
-    record = json.loads(
-        (run_dir / "results.jsonl").read_text().strip().splitlines()[0]
-    )
+    record = json.loads((run_dir / "results.jsonl").read_text().strip().splitlines()[0])
     assert record["error"] is not None
     assert "backend is unreachable" in record["error"]

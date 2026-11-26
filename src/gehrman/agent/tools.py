@@ -163,8 +163,9 @@ def tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "check_scope",
                 "description": (
-                    "Return whether a candidate target string matches any in-scope "
-                    "asset identifier for the program. Loose substring match for now."
+                    "Decide whether a candidate hostname is in scope. Matches an "
+                    "exact host, or a wildcard on a label boundary. Out-of-scope "
+                    "entries win. This is not a substring check."
                 ),
                 "parameters": check_scope_params,
             },
@@ -308,7 +309,7 @@ def _tool_get(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     finally:
         conn.close()
     if row is None:
-        return {"found": False, "platform": args.platform.value, "handle": args.handle}, []
+        return _unknown_handle(), []
     return _explained(
         row,
         found=True,
@@ -336,7 +337,7 @@ def _tool_explain(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     finally:
         conn.close()
     if row is None:
-        return {"found": False}, []
+        return _unknown_handle(), []
     policy = row[0] or ""
     fired: list[str] = []
     policy, did_fire = sanitize(policy, enabled=config.defenses.sanitize)
@@ -369,7 +370,7 @@ def _tool_check_scope(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
     finally:
         conn.close()
     if row is None:
-        return {"found": False}, []
+        return _unknown_handle(), []
     decision = scope_match.evaluate(
         args.candidate,
         in_scope=_load_assets(row[0]),
@@ -383,6 +384,17 @@ def _tool_check_scope(raw: dict, config: AppConfig) -> tuple[dict, list[str]]:
         "decision": decision.decision,
         "matched_asset": decision.matched,
     }, []
+
+
+def _unknown_handle() -> dict[str, Any]:
+    # `error` is not a trusted allow-list key. The sentence is a hint
+    # for the model, not a source of hosts or figures.
+    return {
+        "found": False,
+        "error": (
+            "Unknown handle. Call search first and pass the exact `handle` value from its results."
+        ),
+    }
 
 
 def _load_assets(raw: str | None) -> list[dict]:

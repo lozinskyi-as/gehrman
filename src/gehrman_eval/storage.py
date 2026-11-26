@@ -71,6 +71,25 @@ def timestamp_dirname() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def latest_run_dir(parent: Path) -> Path | None:
+    """Most recent run directory under `parent`, or None if there is none.
+
+    A run directory is one that already has a manifest. `--resume` uses
+    this so a restarted command continues the same log instead of opening
+    a new timestamped directory.
+    """
+    if not parent.is_dir():
+        return None
+    candidates = [
+        path
+        for path in parent.iterdir()
+        if path.is_dir() and (path / "manifest.json").is_file()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
 def prepare_run_dir(parent: Path, *, subdir: str | None = None) -> Path:
     name = subdir or timestamp_dirname()
     run_dir = parent / name
@@ -155,9 +174,7 @@ def write_baselines(run_dir: Path, baselines: dict[str, list[str]]) -> None:
 
 
 def baseline_key(*, user_query: str, model: str, profile: str) -> str:
-    return hashlib.sha256(
-        f"{user_query}|{model}|{profile}".encode()
-    ).hexdigest()[:16]
+    return hashlib.sha256(f"{user_query}|{model}|{profile}".encode()).hexdigest()[:16]
 
 
 def known_handles(db_path: Path) -> list[str]:
@@ -167,3 +184,16 @@ def known_handles(db_path: Path) -> list[str]:
     finally:
         conn.close()
     return [row[0] for row in rows]
+
+
+def known_program_names(db_path: Path) -> dict[str, str]:
+    """Map handle to catalog name. The first row wins if a handle repeats."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT handle, name FROM programs").fetchall()
+    finally:
+        conn.close()
+    names: dict[str, str] = {}
+    for handle, name in rows:
+        names.setdefault(handle, name or "")
+    return names

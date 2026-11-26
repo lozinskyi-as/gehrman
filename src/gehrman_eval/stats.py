@@ -51,6 +51,7 @@ def collapse_repeats(records: Iterable[AttackRecord]) -> list[AttackRecord]:
                 trial_id=f"{key[0]}|{key[1]}|{key[2]}",
                 model_fooled=_majority([r.model_fooled for r in rows]),
                 user_exposed=_majority([r.user_exposed for r in rows]),
+                delivered=_majority([r.delivered for r in rows]),
             )
         )
     return out

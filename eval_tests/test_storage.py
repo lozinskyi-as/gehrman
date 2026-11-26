@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -13,11 +14,23 @@ from gehrman_eval.storage import (
     copy_base_db,
     file_sha256,
     known_handles,
+    latest_run_dir,
     materialize_trial_db,
     prepare_run_dir,
     read_baselines,
     write_baselines,
 )
+
+
+def test_latest_run_dir_picks_the_newest_manifest(tmp_path: Path) -> None:
+    assert latest_run_dir(tmp_path) is None
+    older = prepare_run_dir(tmp_path, subdir="older")
+    newer = prepare_run_dir(tmp_path, subdir="newer")
+    (older / "manifest.json").write_text("{}", encoding="utf-8")
+    (newer / "manifest.json").write_text("{}", encoding="utf-8")
+    os.utime(older / "manifest.json", (1, 1))
+    os.utime(newer / "manifest.json", (2, 2))
+    assert latest_run_dir(tmp_path) == newer
 
 
 def test_prepare_run_dir_creates_trials_subdir(tmp_path: Path) -> None:

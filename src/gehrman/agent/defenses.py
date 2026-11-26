@@ -66,9 +66,7 @@ def _is_dropped(ch: str) -> bool:
     return any(lo <= code <= hi for lo, hi in _INVISIBLE_RANGES)
 
 
-def sanitize(
-    text: str, *, enabled: bool, max_chars: int = SANITIZE_MAX_CHARS
-) -> tuple[str, bool]:
+def sanitize(text: str, *, enabled: bool, max_chars: int = SANITIZE_MAX_CHARS) -> tuple[str, bool]:
     """Baseline clean-up of untrusted catalog text.
 
     In order: NFKC normalization; removal of C0/C1 control characters
@@ -96,15 +94,56 @@ def data_marking(text: str, *, source: str, enabled: bool) -> tuple[str, bool]:
     return f"<<DATA source={source}>>\n{text}\n<<END>>", True
 
 
-def _extract_hosts(text: str) -> set[str]:
-    return {m.group(0).lower().rstrip(".") for m in _HOST_RE.finditer(text.lower())}
+# v2 rejects these as a final label. They showed up as false hosts in
+# control answers ("vue.js", "e.g") and are not bounty-program domains.
+_FALSE_HOST_SUFFIXES = frozenset(
+    {"js", "ts", "py", "md", "json", "yaml", "yml", "txt", "html", "g"}
+)
+_FRACTION_KEYS = frozenset({"skill_fit", "breadth", "pays", "freshness"})
+# "10. " or "11) " at the start of a line is a list marker, not a figure.
+_LIST_ITEM_RE = re.compile(r"(?m)^[ \t]*(\d+)(?:\.|\))[ \t]")
 
 
-def _extract_numbers(text: str) -> set[str]:
-    return {m.group(0).replace(",", "") for m in _NUMBER_RE.finditer(text)}
+def _host_v2_ok(host: str) -> bool:
+    """Last label is a letter TLD of at least two characters; no numeric label."""
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 2 or any(label.isdigit() for label in labels):
+        return False
+    suffix = labels[-1]
+    if len(suffix) < 2 or not suffix.isalpha() or suffix in _FALSE_HOST_SUFFIXES:
+        return False
+    return True
 
 
-def scope_check(text: str, *, enabled: bool, allowed_hosts: Iterable[str]) -> tuple[bool, str]:
+def _extract_hosts(text: str, *, version: int = 1) -> set[str]:
+    found: set[str] = set()
+    for match in _HOST_RE.finditer(text.lower()):
+        host = match.group(0).rstrip(".")
+        if version >= 2 and not _host_v2_ok(host):
+            continue
+        found.add(host)
+    return found
+
+
+def _extract_numbers(text: str, *, version: int = 1) -> set[str]:
+    skipped: set[int] = set()
+    if version >= 2:
+        skipped = {match.start(1) for match in _LIST_ITEM_RE.finditer(text)}
+    found: set[str] = set()
+    for match in _NUMBER_RE.finditer(text):
+        if match.start() in skipped:
+            continue
+        found.add(match.group(0).replace(",", ""))
+    return found
+
+
+def _is_fraction_key(key: str) -> bool:
+    return key in _FRACTION_KEYS or key.endswith("_p") or key.endswith("_share")
+
+
+def scope_check(
+    text: str, *, enabled: bool, allowed_hosts: Iterable[str], version: int = 1
+) -> tuple[bool, str]:
     """Every hostname in `text` must appear in `allowed_hosts`.
 
     `allowed_hosts` is seeded from trusted structured tool fields and
@@ -114,7 +153,7 @@ def scope_check(text: str, *, enabled: bool, allowed_hosts: Iterable[str]) -> tu
     if not enabled:
         return True, ""
     allow = {h.lower().rstrip(".") for h in allowed_hosts}
-    found = _extract_hosts(text)
+    found = _extract_hosts(text, version=version)
     unknown = sorted(found - allow)
     if not unknown:
         return True, ""
@@ -123,12 +162,14 @@ def scope_check(text: str, *, enabled: bool, allowed_hosts: Iterable[str]) -> tu
     return False, f"{len(unknown)} unknown host(s)"
 
 
-def number_check(text: str, *, enabled: bool, allowed_numbers: Iterable[str]) -> tuple[bool, str]:
+def number_check(
+    text: str, *, enabled: bool, allowed_numbers: Iterable[str], version: int = 1
+) -> tuple[bool, str]:
     """Every multi-digit number in `text` must have been seeded this turn."""
     if not enabled:
         return True, ""
     allow = {n.replace(",", "") for n in allowed_numbers}
-    found = _extract_numbers(text)
+    found = _extract_numbers(text, version=version)
     unknown = sorted(found - allow)
     if not unknown:
         return True, ""
@@ -182,7 +223,9 @@ TRUSTED_ALLOWLIST_KEYS = frozenset(
 )
 
 
-def collect_allowed_from_result(result: Any, hosts_out: set[str], numbers_out: set[str]) -> None:
+def collect_allowed_from_result(
+    result: Any, hosts_out: set[str], numbers_out: set[str], *, version: int = 1
+) -> None:
     """Seed allow-sets from trusted structured fields only.
 
     Keys outside `TRUSTED_ALLOWLIST_KEYS` are skipped, including
@@ -191,27 +234,52 @@ def collect_allowed_from_result(result: Any, hosts_out: set[str], numbers_out: s
     """
     if isinstance(result, dict):
         for key, value in result.items():
+            if version >= 2:
+                # "30" in new_assets_30d has no word boundary before it.
+                numbers_out.update(re.findall(r"\d{2,}", str(key)))
             if key not in TRUSTED_ALLOWLIST_KEYS:
                 continue
-            _collect_trusted_value(value, hosts_out, numbers_out)
+            _collect_trusted_value(
+                value,
+                hosts_out,
+                numbers_out,
+                version=version,
+                fraction=version >= 2 and _is_fraction_key(str(key)),
+            )
     elif isinstance(result, list):
         for item in result:
-            collect_allowed_from_result(item, hosts_out, numbers_out)
+            collect_allowed_from_result(item, hosts_out, numbers_out, version=version)
 
 
-def _collect_trusted_value(value: Any, hosts_out: set[str], numbers_out: set[str]) -> None:
+def _collect_trusted_value(
+    value: Any,
+    hosts_out: set[str],
+    numbers_out: set[str],
+    *,
+    version: int = 1,
+    fraction: bool = False,
+) -> None:
     if isinstance(value, dict):
-        collect_allowed_from_result(value, hosts_out, numbers_out)
+        collect_allowed_from_result(value, hosts_out, numbers_out, version=version)
     elif isinstance(value, list):
         for item in value:
-            _collect_trusted_value(item, hosts_out, numbers_out)
+            _collect_trusted_value(item, hosts_out, numbers_out, version=version, fraction=fraction)
     elif isinstance(value, bool):
         return
     elif isinstance(value, int | float):
         _add_number(numbers_out, value)
+        if fraction:
+            _add_percent(numbers_out, value)
     elif isinstance(value, str):
-        hosts_out.update(_extract_hosts(value))
-        numbers_out.update(_extract_numbers(value))
+        hosts_out.update(_extract_hosts(value, version=version))
+        numbers_out.update(_extract_numbers(value, version=version))
+
+
+def _add_percent(numbers_out: set[str], value: int | float) -> None:
+    """0.98 and 1.0 may be spoken as 98 and 100."""
+    if isinstance(value, bool) or not 0 <= float(value) <= 1:
+        return
+    numbers_out.add(str(int(round(float(value) * 100))))
 
 
 def _add_number(numbers_out: set[str], value: int | float) -> None:
@@ -229,7 +297,7 @@ def _add_number(numbers_out: set[str], value: int | float) -> None:
 
 
 def collect_allowed_from_latest_user_message(
-    messages: Iterable[Any], hosts_out: set[str], numbers_out: set[str]
+    messages: Iterable[Any], hosts_out: set[str], numbers_out: set[str], *, version: int = 1
 ) -> None:
     """Seed allow-sets from the latest user message.
 
@@ -243,5 +311,5 @@ def collect_allowed_from_latest_user_message(
         content = message.get("content")
         if isinstance(content, str):
             latest = content
-    hosts_out.update(_extract_hosts(latest))
-    numbers_out.update(_extract_numbers(latest))
+    hosts_out.update(_extract_hosts(latest, version=version))
+    numbers_out.update(_extract_numbers(latest, version=version))

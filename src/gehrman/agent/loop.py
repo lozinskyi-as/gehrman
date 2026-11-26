@@ -25,6 +25,7 @@ chat command uses the simple string return for its REPL.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +34,7 @@ from openai import OpenAI
 
 from gehrman.agent.adapter import (
     AdapterError,
+    AdapterToolCall,
     AdapterUsage,
     ModelAdapter,
     OpenAICompatAdapter,
@@ -65,6 +67,8 @@ class ToolCallTrace:
     result: Any | None = None
     error: str | None = None
     fired_defenses: list[str] = field(default_factory=list)
+    # True when the harness issued the call before the model spoke.
+    forced: bool = False
 
 
 @dataclass
@@ -99,6 +103,7 @@ def run_turn(
     *,
     adapter: ModelAdapter | None = None,
     return_trace: bool = False,
+    forced_calls: list[tuple[str, dict]] | None = None,
 ) -> str | TurnTrace:
     """Run one user turn.
 
@@ -107,6 +112,10 @@ def run_turn(
     only care about display (the chat REPL) keep the simple return.
 
     `adapter` overrides the default OpenAI/Ollama adapter.
+
+    `forced_calls` are executed before the first model request, through
+    the same dispatch, defense, and allow-list path as a model tool
+    call. Omit it and the turn is unchanged.
     """
     if adapter is None:
         if client is None:
@@ -118,7 +127,30 @@ def run_turn(
     allowed_hosts: set[str] = set()
     allowed_numbers: set[str] = set()
     # The user is trusted. Tool arguments are not: the model writes them.
-    collect_allowed_from_latest_user_message(messages, allowed_hosts, allowed_numbers)
+    version = config.defenses.check_version
+    collect_allowed_from_latest_user_message(
+        messages, allowed_hosts, allowed_numbers, version=version
+    )
+
+    if forced_calls:
+        _perform_tool_calls(
+            messages=messages,
+            trace=trace,
+            config=config,
+            calls=[
+                AdapterToolCall(
+                    id=f"forced-{index}",
+                    name=name,
+                    arguments_json=json.dumps(arguments),
+                )
+                for index, (name, arguments) in enumerate(forced_calls)
+            ],
+            assistant_content="",
+            allowed_hosts=allowed_hosts,
+            allowed_numbers=allowed_numbers,
+            on_event=on_event,
+            forced=True,
+        )
 
     for _ in range(config.agent.max_tool_steps):
         try:
@@ -134,19 +166,20 @@ def run_turn(
         trace.usage.tokens_in += response.usage.tokens_in
         trace.usage.tokens_out += response.usage.tokens_out
 
-        entry: dict = {"role": "assistant", "content": response.text or ""}
-        if response.tool_calls:
-            entry["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments_json},
-                }
-                for call in response.tool_calls
-            ]
-        messages.append(entry)
-
-        if not response.tool_calls:
+        calls = list(response.tool_calls)
+        if not calls:
+            parsed = _parse_text_tool_call(response.text or "")
+            if parsed is not None:
+                name, arguments = parsed
+                calls = [
+                    AdapterToolCall(
+                        id="text-0",
+                        name=name,
+                        arguments_json=json.dumps(arguments),
+                    )
+                ]
+        if not calls:
+            messages.append({"role": "assistant", "content": response.text or ""})
             trace.raw_answer = response.text or ""
             trace.final_answer = _apply_output_defenses(
                 trace.raw_answer,
@@ -157,35 +190,124 @@ def run_turn(
             )
             return trace if return_trace else trace.final_answer
 
-        for call in response.tool_calls:
-            if on_event is not None:
-                on_event("tool_call", {"name": call.name, "arguments": call.arguments_json})
-            call_trace = ToolCallTrace(
-                name=call.name,
-                arguments_json=call.arguments_json,
-                accepted=True,
-            )
-            try:
-                result, fired = dispatch(call.name, call.arguments_json, config)
-                call_trace.result = result
-                call_trace.fired_defenses.extend(fired)
-                trace.defenses_fired.extend(fired)
-                collect_allowed_from_result(result, allowed_hosts, allowed_numbers)
-                content = json.dumps(result)
-                if on_event is not None:
-                    on_event("tool_result", {"name": call.name, "result": result})
-            except ToolError as exc:
-                call_trace.accepted = False
-                call_trace.error = str(exc)
-                content = json.dumps({"error": str(exc)})
-                if on_event is not None:
-                    on_event("tool_error", {"name": call.name, "error": str(exc)})
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-            trace.tool_calls.append(call_trace)
+        _perform_tool_calls(
+            messages=messages,
+            trace=trace,
+            config=config,
+            calls=calls,
+            assistant_content=response.text or "",
+            allowed_hosts=allowed_hosts,
+            allowed_numbers=allowed_numbers,
+            on_event=on_event,
+            forced=False,
+        )
 
     raise AgentError(
         f"Exceeded max_tool_steps={config.agent.max_tool_steps} without a final answer"
     )
+
+
+def _perform_tool_calls(
+    *,
+    messages: list[dict],
+    trace: TurnTrace,
+    config: AppConfig,
+    calls: list[AdapterToolCall],
+    assistant_content: str,
+    allowed_hosts: set[str],
+    allowed_numbers: set[str],
+    on_event: EventCallback | None,
+    forced: bool,
+) -> None:
+    """Dispatch one batch of tool calls and append them to the history."""
+    messages.append(
+        {
+            "role": "assistant",
+            "content": assistant_content,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments_json},
+                }
+                for call in calls
+            ],
+        }
+    )
+    for call in calls:
+        if on_event is not None:
+            on_event("tool_call", {"name": call.name, "arguments": call.arguments_json})
+        call_trace = ToolCallTrace(
+            name=call.name,
+            arguments_json=call.arguments_json,
+            accepted=True,
+            forced=forced,
+        )
+        try:
+            result, fired = dispatch(call.name, call.arguments_json, config)
+            call_trace.result = result
+            call_trace.fired_defenses.extend(fired)
+            trace.defenses_fired.extend(fired)
+            collect_allowed_from_result(
+                result, allowed_hosts, allowed_numbers, version=config.defenses.check_version
+            )
+            content = json.dumps(result)
+            if on_event is not None:
+                on_event("tool_result", {"name": call.name, "result": result})
+        except ToolError as exc:
+            call_trace.accepted = False
+            call_trace.error = str(exc)
+            content = json.dumps({"error": str(exc)})
+            if on_event is not None:
+                on_event("tool_error", {"name": call.name, "error": str(exc)})
+        messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+        trace.tool_calls.append(call_trace)
+
+
+def _as_tool_call(text: str) -> tuple[str, dict] | None:
+    """Parse one JSON object shaped like a tool call, or return None."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if "parameters" in data:
+        arguments = data["parameters"]
+    elif "arguments" in data:
+        arguments = data["arguments"]
+    else:
+        return None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    return name, arguments
+
+
+def _parse_text_tool_call(text: str) -> tuple[str, dict] | None:
+    """Recover a tool call written as text instead of a native tool_call.
+
+    Accepts the whole message, or a single fenced block with nothing
+    else around it. Prose that merely mentions JSON is left alone.
+    """
+    parsed = _as_tool_call(text.strip())
+    if parsed is not None:
+        return parsed
+    for match in re.finditer(r"```(?:json)?[^\n]*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
+        parsed = _as_tool_call(match.group(1).strip())
+        if parsed is None:
+            continue
+        outside = (text[: match.start()] + text[match.end() :]).strip()
+        if not outside:
+            return parsed
+    return None
 
 
 def _apply_output_defenses(
@@ -205,14 +327,20 @@ def _apply_output_defenses(
     reasons: list[str] = []
 
     ok, evidence = scope_check(
-        raw, enabled=config.defenses.scope_check, allowed_hosts=allowed_hosts
+        raw,
+        enabled=config.defenses.scope_check,
+        allowed_hosts=allowed_hosts,
+        version=config.defenses.check_version,
     )
     if config.defenses.scope_check and not ok:
         defenses_fired.append("scope_check")
         reasons.append(f"scope_check: {evidence}")
 
     ok, evidence = number_check(
-        raw, enabled=config.defenses.number_check, allowed_numbers=allowed_numbers
+        raw,
+        enabled=config.defenses.number_check,
+        allowed_numbers=allowed_numbers,
+        version=config.defenses.check_version,
     )
     if config.defenses.number_check and not ok:
         defenses_fired.append("number_check")

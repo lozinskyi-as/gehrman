@@ -84,6 +84,8 @@ def seed_db(tmp_path: Path):
                   fetched_at TEXT NOT NULL,
                   snapshot_sha256 TEXT NOT NULL,
                   snapshot_path TEXT NOT NULL,
+                  score_components TEXT NOT NULL DEFAULT '{}',
+                  extras TEXT NOT NULL DEFAULT '{}',
                   PRIMARY KEY (platform, handle)
                 );
                 """

@@ -32,9 +32,7 @@ from gehrman.constants import (
 )
 from gehrman.paths import config_path, ensure_private_dir
 
-CONFIG_HEADER = (
-    "# Gehrman configuration. Never store API keys or secrets in this file.\n"
-)
+CONFIG_HEADER = "# Gehrman configuration. Never store API keys or secrets in this file.\n"
 
 # Reject these keys if they ever appear in the serialized config. Belt
 # and suspenders for a future provider that needs auth.
@@ -110,6 +108,9 @@ class DefensesConfig(BaseModel):
     data_marking: bool = True
     scope_check: bool = True
     number_check: bool = True
+    # 1 keeps the original host and number checks. 2 is the tighter
+    # check used by the `*_v2` evaluation profiles.
+    check_version: int = Field(default=1, ge=1, le=2)
 
 
 class AppConfig(BaseModel):

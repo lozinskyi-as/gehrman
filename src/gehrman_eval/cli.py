@@ -12,6 +12,7 @@ from rich.console import Console
 from gehrman_eval.corpus import Form, Goal, load_controls, load_corpus
 from gehrman_eval.report import write_report
 from gehrman_eval.runner import Runner, dry_run_summary
+from gehrman_eval.storage import latest_run_dir
 from gehrman_eval.suite import load_suite, merge_cli_overrides
 
 app = typer.Typer(
@@ -108,11 +109,18 @@ def run_command(
     resume: Annotated[
         bool, typer.Option("--resume/--no-resume", help="Skip trials already in results.jsonl.")
     ] = False,
+    delivery: Annotated[
+        str | None,
+        typer.Option("--delivery", help="How the attack reaches the model: natural or forced."),
+    ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the trial plan and exit.")
     ] = False,
 ) -> None:
     """Execute a full run: inject, score, log to results.jsonl."""
+    if delivery is not None and delivery not in ("natural", "forced"):
+        console.print("[red]--delivery must be 'natural' or 'forced'.[/red]")
+        raise typer.Exit(code=1)
     resolved = merge_cli_overrides(
         load_suite(suite),
         models=model,
@@ -130,6 +138,7 @@ def run_command(
         out_dir=out_dir,
         base_db=base_db,
         ollama_base_url=ollama_base_url,
+        delivery=delivery,
     )
     try:
         attack_corpus = load_corpus(resolved.corpus)
@@ -149,8 +158,9 @@ def run_command(
         console.print(json.dumps(summary, indent=2))
         return
 
+    run_dir = latest_run_dir(resolved.out_dir) if resume else None
     try:
-        report = Runner(resolved, resume=resume, console=console).run(
+        report = Runner(resolved, resume=resume, run_dir=run_dir, console=console).run(
             attack_corpus, controls=control_set
         )
     except FileNotFoundError as exc:

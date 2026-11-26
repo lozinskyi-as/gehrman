@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 from gehrman.agent.adapter import AdapterResponse, AdapterToolCall, AdapterUsage
+from gehrman.agent.defenses import TRUSTED_ALLOWLIST_KEYS
 from gehrman.agent.loop import TurnTrace, run_turn, start_session
+from gehrman.agent.tools import dispatch
 from gehrman.catalogs.store import connect
 from gehrman.config import AgentConfig, AppConfig, DefensesConfig, ProfileConfig
 from gehrman.constants import Skill
@@ -53,9 +55,7 @@ def _answer(text: str, tokens_in: int = 10, tokens_out: int = 5) -> AdapterRespo
 def _tool_call(name: str, arguments: dict, call_id: str = "call-1") -> AdapterResponse:
     return AdapterResponse(
         text="",
-        tool_calls=[
-            AdapterToolCall(id=call_id, name=name, arguments_json=json.dumps(arguments))
-        ],
+        tool_calls=[AdapterToolCall(id=call_id, name=name, arguments_json=json.dumps(arguments))],
         usage=AdapterUsage(tokens_in=10, tokens_out=0),
     )
 
@@ -338,3 +338,113 @@ def test_structured_fields_and_user_message_are_allowed(
 def test_run_turn_without_adapter_or_client_raises(isolated_dirs: dict[str, Path]) -> None:
     with pytest.raises(Exception, match="client.*adapter"):
         run_turn(client=None, config=_config(), messages=start_session())
+
+
+def test_without_forced_calls_the_model_sees_only_the_user_turn(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    del isolated_dirs
+    adapter = FakeAdapter([_answer("ok")])
+    messages = start_session()
+    messages.append({"role": "user", "content": "recommend"})
+    run_turn(client=None, config=_config(), messages=messages, adapter=adapter)
+    roles = [message["role"] for message in adapter.calls[0]["messages"]]
+    assert roles == ["system", "user"]
+
+
+def test_forced_call_is_shown_to_the_model_before_it_speaks(
+    isolated_dirs: dict[str, Path],
+) -> None:
+    _seed_program("shopify", "SECRET POLICY")
+    adapter = FakeAdapter([_answer("ok")])
+    messages = start_session()
+    messages.append({"role": "user", "content": "explain shopify"})
+    trace = run_turn(
+        client=None,
+        config=_config(),
+        messages=messages,
+        adapter=adapter,
+        return_trace=True,
+        forced_calls=[("explain", {"platform": "hackerone", "handle": "shopify"})],
+    )
+    assert isinstance(trace, TurnTrace)
+    assert trace.tool_calls[0].forced is True
+    assert trace.tool_calls[0].name == "explain"
+    assert "SECRET POLICY" in trace.tool_calls[0].result["policy_excerpt"]
+    seen = adapter.calls[0]["messages"]
+    assert seen[-1]["role"] == "tool"
+    assert "SECRET POLICY" in seen[-1]["content"]
+
+
+def test_text_json_tool_call_is_executed(isolated_dirs: dict[str, Path]) -> None:
+    _seed_program("shopify", "policy")
+    adapter = FakeAdapter(
+        [
+            _answer('{"name": "search", "parameters": {"limit": 1}}'),
+            _answer("done"),
+        ]
+    )
+    messages = start_session()
+    messages.append({"role": "user", "content": "find one"})
+    trace = run_turn(
+        client=None, config=_config(), messages=messages, adapter=adapter, return_trace=True
+    )
+    assert isinstance(trace, TurnTrace)
+    assert trace.tool_calls[0].name == "search"
+    assert trace.tool_calls[0].accepted is True
+    assert trace.tool_calls[0].forced is False
+    assert trace.tool_calls[0].result["count"] == 1
+    assert trace.final_answer == "done"
+
+
+def test_text_that_is_not_a_tool_call_stays_the_answer(isolated_dirs: dict[str, Path]) -> None:
+    del isolated_dirs
+    adapter = FakeAdapter([_answer("not json, and {not a call}")])
+    messages = start_session()
+    messages.append({"role": "user", "content": "hi"})
+    trace = run_turn(
+        client=None, config=_config(), messages=messages, adapter=adapter, return_trace=True
+    )
+    assert isinstance(trace, TurnTrace)
+    assert trace.tool_calls == []
+    assert trace.raw_answer == "not json, and {not a call}"
+
+
+def test_unknown_tool_written_as_json_is_rejected(isolated_dirs: dict[str, Path]) -> None:
+    del isolated_dirs
+    adapter = FakeAdapter(
+        [
+            _answer('{"name": "fetch_url", "arguments": {"target": "x"}}'),
+            _answer("stopped"),
+        ]
+    )
+    messages = start_session()
+    messages.append({"role": "user", "content": "hi"})
+    trace = run_turn(
+        client=None, config=_config(), messages=messages, adapter=adapter, return_trace=True
+    )
+    assert isinstance(trace, TurnTrace)
+    assert trace.tool_calls[0].name == "fetch_url"
+    assert trace.tool_calls[0].accepted is False
+    assert trace.tool_calls[0].error is not None
+    assert "Unknown tool" in trace.tool_calls[0].error
+    assert trace.final_answer == "stopped"
+
+
+def test_unknown_handle_tells_the_model_to_search_first(isolated_dirs: dict[str, Path]) -> None:
+    _seed_program("shopify", "policy")
+    assert "error" not in TRUSTED_ALLOWLIST_KEYS
+    for name, arguments in (
+        ("get", {"platform": "hackerone", "handle": "missing"}),
+        ("explain", {"platform": "hackerone", "handle": "missing"}),
+        ("check_scope", {"platform": "hackerone", "handle": "missing", "candidate": "a.com"}),
+    ):
+        result, fired = dispatch(name, arguments, _config())
+        assert fired == []
+        assert result == {
+            "found": False,
+            "error": (
+                "Unknown handle. Call search first and pass the exact "
+                "`handle` value from its results."
+            ),
+        }

@@ -35,6 +35,22 @@ PROFILES: dict[str, DefensesConfig] = {
         scope_check=True,
         number_check=True,
     ),
+    # Same switches as the v1 profiles, with the tighter host/number checks.
+    # The v1 profiles stay byte-compatible with runs from commit 2f422b9.
+    "deterministic_v2": DefensesConfig(
+        sanitize=True,
+        data_marking=False,
+        scope_check=True,
+        number_check=True,
+        check_version=2,
+    ),
+    "all_v2": DefensesConfig(
+        sanitize=True,
+        data_marking=True,
+        scope_check=True,
+        number_check=True,
+        check_version=2,
+    ),
 }
 
 

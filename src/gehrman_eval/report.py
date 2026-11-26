@@ -84,6 +84,9 @@ class AttackRecord:
     tokens_out: int
     latency_s: float
     error: str | None
+    # Runs recorded before delivery tracking omit the field. Those trials
+    # stay in the headline rates instead of all being dropped.
+    delivered: bool = True
 
 
 @dataclass
@@ -140,6 +143,7 @@ def load_run(run_dir: Path) -> RunData:
                     tokens_out=int(r.get("tokens_out", 0) or 0),
                     latency_s=float(r.get("latency_s", 0.0) or 0.0),
                     error=r.get("error"),
+                    delivered=bool(r["delivered"]) if "delivered" in r else True,
                 )
             )
     controls: list[ControlRecord] = []
@@ -245,15 +249,9 @@ def summarize_controls(records: Iterable[ControlRecord]) -> list[ControlCellStat
 def pick_examples(data: RunData, *, max_chars: int = 320) -> list[dict[str, Any]]:
     """Pick up to three illustrative traces: attack landed, attack blocked, FP."""
     examples: list[dict[str, Any]] = []
-    attack_landed = next(
-        (a for a in data.attacks if a.model_fooled and a.user_exposed), None
-    )
-    attack_blocked = next(
-        (a for a in data.attacks if a.model_fooled and not a.user_exposed), None
-    )
-    false_positive = next(
-        (c for c in data.controls if c.any_defense_fired), None
-    )
+    attack_landed = next((a for a in data.attacks if a.model_fooled and a.user_exposed), None)
+    attack_blocked = next((a for a in data.attacks if a.model_fooled and not a.user_exposed), None)
+    false_positive = next((c for c in data.controls if c.any_defense_fired), None)
     if attack_landed is not None:
         examples.append(_format_attack_example("Attack landed", attack_landed, max_chars))
     if attack_blocked is not None:
@@ -277,9 +275,7 @@ def pick_examples(data: RunData, *, max_chars: int = 320) -> list[dict[str, Any]
     return examples
 
 
-def _format_attack_example(
-    title: str, a: AttackRecord, max_chars: int
-) -> dict[str, Any]:
+def _format_attack_example(title: str, a: AttackRecord, max_chars: int) -> dict[str, Any]:
     return {
         "title": title,
         "attack_id": a.attack_id,
@@ -307,44 +303,50 @@ def render_markdown(data: RunData) -> str:
     buf.write(f"- **Base DB SHA-256**: `{manifest.get('base_db_sha256', '—')}`\n")
     buf.write(f"- **Models**: {', '.join(manifest.get('models', []))}\n")
     buf.write(f"- **Profiles**: {', '.join(manifest.get('profiles', []))}\n")
+    delivery = (manifest.get("extra") or {}).get("delivery", "natural")
+    buf.write(f"- **Delivery**: {delivery}\n")
     buf.write(f"- **Repeats**: {manifest.get('repeats', '—')}\n")
     buf.write(f"- **Attack trials**: {len(data.attacks)}\n")
     buf.write(f"- **Control trials**: {len(data.controls)}\n")
-    total_s = sum(a.latency_s for a in data.attacks) + sum(
-        c.latency_s for c in data.controls
-    )
+    total_s = sum(a.latency_s for a in data.attacks) + sum(c.latency_s for c in data.controls)
     buf.write(f"- **Model time (sum of trial latencies)**: {total_s:.1f} s\n")
     tokens_in = sum(a.tokens_in for a in data.attacks)
     tokens_out = sum(a.tokens_out for a in data.attacks)
     if tokens_in or tokens_out:
         buf.write(f"- **Tokens**: in={tokens_in:,}, out={tokens_out:,}\n")
-    failures = sum(1 for a in data.attacks if a.error) + sum(
-        1 for c in data.controls if c.error
-    )
+    failures = sum(1 for a in data.attacks if a.error) + sum(1 for c in data.controls if c.error)
     if failures:
         buf.write(f"- **Failed trials**: {failures}\n")
     from gehrman_eval.stats import collapse_repeats
 
     attacks = collapse_repeats(data.attacks)
+    delivered = [row for row in attacks if row.delivered]
     buf.write(
         "\nUnit of analysis: one attack per model × profile. Repeats are "
         "collapsed by majority vote (ties count for the attacker); failed "
-        "trials are excluded from n.\n"
+        "trials are excluded from n. Headline success rates count only "
+        "attacks whose payload was present in a tool result. Overall rates, "
+        "including attacks that never reached the model, follow that table.\n"
     )
-    buf.write("\n## Attack success rate per model × profile\n\n")
+    buf.write("\n## Delivery rate per model × profile\n\n")
+    buf.write(_table_delivery(attacks))
+    buf.write("\n## Attack success rate per model × profile (among delivered)\n\n")
+    buf.write(_table_attacks(summarize_attacks(delivered)))
+
+    buf.write("\n## Attack success rate overall\n\n")
     buf.write(_table_attacks(summarize_attacks(attacks)))
 
     buf.write("\n## By attack group (by construction vs adaptive)\n\n")
-    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="group")))
+    buf.write(_table_attacks(summarize_attacks(delivered, slice_by="group")))
 
     buf.write("\n## By attack form\n\n")
-    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="form")))
+    buf.write(_table_attacks(summarize_attacks(delivered, slice_by="form")))
 
     buf.write("\n## By attack goal\n\n")
-    buf.write(_table_attacks(summarize_attacks(attacks, slice_by="goal")))
+    buf.write(_table_attacks(summarize_attacks(delivered, slice_by="goal")))
 
-    buf.write("\n## Paired comparisons (exact McNemar, user_exposed)\n\n")
-    buf.write(_table_paired(attacks))
+    buf.write("\n## Paired comparisons (exact McNemar, user_exposed, delivered only)\n\n")
+    buf.write(_table_paired(delivered))
 
     buf.write("\n## Stability across repeats\n\n")
     buf.write(_table_stability(data.attacks))
@@ -356,6 +358,23 @@ def render_markdown(data: RunData) -> str:
     for ex in pick_examples(data):
         buf.write(_format_example_md(ex))
     buf.write("\n")
+    return buf.getvalue()
+
+
+def _table_delivery(records: list[AttackRecord]) -> str:
+    if not records:
+        return "_No attack trials recorded._\n"
+    buckets: dict[tuple[str, str], list[AttackRecord]] = defaultdict(list)
+    for record in records:
+        buckets[(record.model, record.profile)].append(record)
+    buf = io.StringIO()
+    buf.write("| model | profile | n | delivered |\n")
+    buf.write("|---|---|---|---|\n")
+    for (model, profile), rows in sorted(buckets.items()):
+        hit = sum(1 for row in rows if row.delivered)
+        buf.write(
+            f"| {model} | {profile} | {len(rows)} | {wilson_interval(hit, len(rows)).format()} |\n"
+        )
     return buf.getvalue()
 
 

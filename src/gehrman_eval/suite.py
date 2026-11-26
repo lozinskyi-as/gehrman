@@ -11,15 +11,17 @@ from __future__ import annotations
 import io
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from ruamel.yaml import YAML
 
 from gehrman_eval.corpus import Form, Goal
-from gehrman_eval.profiles import PROFILES
 
 DEFAULT_MODELS = ("ollama:llama3.1",)
-DEFAULT_PROFILES = tuple(PROFILES.keys())
+# The original four. `deterministic_v2` and `all_v2` are opt-in so a
+# default run stays comparable with the v1 defense checks.
+DEFAULT_PROFILES = ("none", "prompt", "deterministic", "all")
 DEFAULT_REPEATS = 1
 DEFAULT_SEED = 0
 DEFAULT_TEMPERATURE = 0.0
@@ -59,6 +61,9 @@ class Suite(BaseModel):
     out_dir: Path = Path("runs")
     base_db: Path | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
+    # `forced` runs get+explain on the carrier before the model speaks.
+    # `natural` leaves tool use entirely to the model.
+    delivery: Literal["natural", "forced"] = "natural"
 
 
 def load_suite(path: Path | str | None) -> Suite:
@@ -88,6 +93,7 @@ def merge_cli_overrides(
     out_dir: Path | None = None,
     base_db: Path | None = None,
     ollama_base_url: str | None = None,
+    delivery: str | None = None,
 ) -> Suite:
     """Return a new Suite with the provided CLI flags applied on top."""
     overrides: dict = {}
@@ -121,4 +127,6 @@ def merge_cli_overrides(
         overrides["base_db"] = base_db
     if ollama_base_url is not None:
         overrides["ollama_base_url"] = ollama_base_url
+    if delivery is not None:
+        overrides["delivery"] = delivery
     return suite.model_copy(update=overrides)
